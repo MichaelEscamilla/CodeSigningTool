@@ -1338,6 +1338,77 @@ function Show-CertificateInformation {
 
   return $viewerWindow.ShowDialog()
 }
+
+function Show-StatusWindow {
+  # Themed, reusable modal message window that replaces the built-in MessageBox.
+  param (
+    [Parameter(Mandatory = $true)]
+    [string]$Message,
+
+    [Parameter(Mandatory = $false)]
+    [string]$Title = 'Status',
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Info', 'Success', 'Warning', 'Error')]
+    [string]$Type = 'Info',
+
+    [Parameter(Mandatory = $false)]
+    [System.Windows.Window]$Owner
+  )
+
+  $readerStatus = New-Object System.Xml.XmlNodeReader $Script:XAMLstatus
+  [System.Windows.Window]$statusWindow = [Windows.Markup.XamlReader]::Load($readerStatus)
+
+  # Resolve the controls used by this window
+  $txt_StatusTitle = $statusWindow.FindName('txt_StatusTitle')
+  $txt_StatusMessage = $statusWindow.FindName('txt_StatusMessage')
+  $icn_Status = $statusWindow.FindName('icn_Status')
+  $btn_Close = $statusWindow.FindName('btn_Close')
+  $titlebar = $statusWindow.FindName('titlebar')
+  $titlebar_Close = $statusWindow.FindName('titlebar_Close')
+
+  $statusWindow.Title = $Title
+  $txt_StatusTitle.Text = $Title
+  $txt_StatusMessage.Text = $Message
+
+  # Map severity to a glyph and accent colour.
+  $glyph, $brushKey = switch ($Type) {
+    'Success' { [char]0xEC61, 'Success' }
+    'Warning' { [char]0xE7BA, 'Accent' }
+    'Error' { [char]0xEB90, 'Danger' }
+    default { [char]0xE946, 'Accent' }
+  }
+  $icn_Status.Text = $glyph
+  $icn_Status.Foreground = $statusWindow.FindResource($brushKey)
+
+  $statusWindow.Add_Loaded({
+      try {
+        $WindowIconBitmap = [System.Windows.Media.Imaging.BitmapImage]::new()
+        $WindowIconBitmap.BeginInit()
+        $WindowIconBitmap.StreamSource = [System.IO.MemoryStream][System.Convert]::FromBase64String($Script:WindowIconBase64)
+        $WindowIconBitmap.EndInit()
+        $WindowIconBitmap.Freeze()
+        $statusWindow.Icon = $WindowIconBitmap
+      }
+      catch {
+        Write-Host "Error setting status icon: $_"
+      }
+    })
+
+  $btn_Close.add_Click({ $statusWindow.DialogResult = $true })
+  $titlebar_Close.add_Click({ $statusWindow.DialogResult = $true })
+  $titlebar.add_MouseLeftButtonDown({ try { $statusWindow.DragMove() } catch { } })
+
+  if ($Owner) {
+    $statusWindow.Owner = $Owner
+    $statusWindow.WindowStartupLocation = "CenterOwner"
+  }
+  else {
+    $statusWindow.WindowStartupLocation = "CenterScreen"
+  }
+
+  return $statusWindow.ShowDialog()
+}
 #endregion Functions
 
 #############################################
@@ -3365,7 +3436,7 @@ function Show-CertificateInformation {
 "@
 
 #############################################
-######### Certificate Information XAML #######
+######### Certificate Information XAML ######
 #############################################
 [xml]$Script:XAMLviewer = @"
 <Window
@@ -3873,6 +3944,244 @@ function Show-CertificateInformation {
 "@
 
 #############################################
+############# Status Window #################
+#############################################
+# Generic, reusable themed message window (replaces the built-in MessageBox for status details).
+[xml]$Script:XAMLstatus = @"
+<Window
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  Name="statusWindow"
+  Width="480"
+  SizeToContent="Height"
+  ResizeMode="NoResize"
+  WindowStyle="None"
+  AllowsTransparency="True"
+  Background="Transparent"
+  Title="Status"
+  FontFamily="Segoe UI"
+  FontSize="14">
+
+  <Window.Resources>
+    <SolidColorBrush x:Key="Bg"
+        Color="#292524"/>
+    <SolidColorBrush x:Key="Surface"
+        Color="#1C1917"/>
+    <SolidColorBrush x:Key="Surface2"
+        Color="#44403C"/>
+    <SolidColorBrush x:Key="Border"
+        Color="#3A3633"/>
+    <SolidColorBrush x:Key="BorderMuted"
+        Color="#57534E"/>
+    <SolidColorBrush x:Key="Text"
+        Color="#F5F5F4"/>
+    <SolidColorBrush x:Key="TextMuted"
+        Color="#A8A29E"/>
+    <SolidColorBrush x:Key="Accent"
+        Color="#FB923C"/>
+    <SolidColorBrush x:Key="AccentHover"
+        Color="#F97316"/>
+    <SolidColorBrush x:Key="AccentText"
+        Color="#1C1917"/>
+    <SolidColorBrush x:Key="Danger"
+        Color="#EF4444"/>
+    <SolidColorBrush x:Key="Success"
+        Color="#22C55E"/>
+
+    <Style x:Key="ThemedButton"
+        TargetType="Button">
+      <Setter Property="Foreground"
+          Value="{StaticResource Text}"/>
+      <Setter Property="Background"
+          Value="{StaticResource Surface2}"/>
+      <Setter Property="BorderBrush"
+          Value="{StaticResource BorderMuted}"/>
+      <Setter Property="BorderThickness"
+          Value="1"/>
+      <Setter Property="Margin"
+          Value="2.5"/>
+      <Setter Property="Padding"
+          Value="14,6"/>
+      <Setter Property="FontWeight"
+          Value="SemiBold"/>
+      <Setter Property="Cursor"
+          Value="Hand"/>
+      <Setter Property="HorizontalContentAlignment"
+          Value="Center"/>
+      <Setter Property="VerticalContentAlignment"
+          Value="Center"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                CornerRadius="6">
+              <ContentPresenter HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource Accent}"/>
+                <Setter TargetName="Bd"
+                    Property="BorderBrush"
+                    Value="{StaticResource Accent}"/>
+                <Setter Property="Foreground"
+                    Value="{StaticResource AccentText}"/>
+              </Trigger>
+              <Trigger Property="IsPressed"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource AccentHover}"/>
+                <Setter TargetName="Bd"
+                    Property="BorderBrush"
+                    Value="{StaticResource AccentHover}"/>
+                <Setter Property="Foreground"
+                    Value="{StaticResource AccentText}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="Button"
+        BasedOn="{StaticResource ThemedButton}"/>
+
+    <Style x:Key="TitleBarCloseButton"
+        TargetType="Button">
+      <Setter Property="Foreground"
+          Value="{StaticResource TextMuted}"/>
+      <Setter Property="Background"
+          Value="Transparent"/>
+      <Setter Property="BorderThickness"
+          Value="0"/>
+      <Setter Property="Width"
+          Value="46"/>
+      <Setter Property="FontFamily"
+          Value="Segoe MDL2 Assets"/>
+      <Setter Property="FontSize"
+          Value="10"/>
+      <Setter Property="Cursor"
+          Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                CornerRadius="0,11,0,0">
+              <ContentPresenter HorizontalAlignment="Center"
+                  VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource Danger}"/>
+                <Setter Property="Foreground"
+                    Value="#FFFFFF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <Border Background="{StaticResource Bg}"
+      CornerRadius="12"
+      BorderBrush="{StaticResource BorderMuted}"
+      BorderThickness="1"
+      Margin="0">
+    <DockPanel>
+      <Border Name="titlebar"
+          DockPanel.Dock="Top"
+          Background="{StaticResource Surface}"
+          CornerRadius="11,11,0,0"
+          Height="42">
+        <DockPanel LastChildFill="False">
+          <Button Name="titlebar_Close"
+              DockPanel.Dock="Right"
+              Style="{StaticResource TitleBarCloseButton}"
+              Content="&#xE8BB;"/>
+          <Image DockPanel.Dock="Left"
+              Margin="14,0,0,0"
+              Width="20"
+              Height="20"
+              VerticalAlignment="Center"
+              RenderOptions.BitmapScalingMode="HighQuality"
+              Source="{Binding Icon, RelativeSource={RelativeSource AncestorType=Window}}"/>
+          <TextBlock DockPanel.Dock="Left"
+              Name="txt_StatusTitle"
+              FontSize="15"
+              FontWeight="SemiBold"
+              Foreground="{StaticResource Text}"
+              Text="Status"
+              VerticalAlignment="Center"
+              Margin="10,0,0,0"/>
+        </DockPanel>
+      </Border>
+
+      <Grid Margin="16">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+            Background="{StaticResource Surface}"
+            BorderBrush="{StaticResource Border}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="16">
+          <DockPanel>
+            <TextBlock Name="icn_Status"
+                DockPanel.Dock="Left"
+                FontFamily="Segoe MDL2 Assets"
+                FontSize="24"
+                VerticalAlignment="Top"
+                Margin="0,0,14,0"
+                Foreground="{StaticResource Accent}"
+                Text="&#xE946;"/>
+            <TextBox Name="txt_StatusMessage"
+                Background="Transparent"
+                BorderThickness="0"
+                Foreground="{StaticResource Text}"
+                IsReadOnly="True"
+                TextWrapping="Wrap"
+                MaxHeight="360"
+                VerticalAlignment="Center"
+                VerticalScrollBarVisibility="Auto"
+                CaretBrush="{StaticResource Accent}"
+                SelectionBrush="{StaticResource Accent}"
+                Text=""/>
+          </DockPanel>
+        </Border>
+
+        <Grid Grid.Row="1"
+            Margin="0,16,0,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <Button Grid.Column="1"
+              Name="btn_Close"
+              Content="Close"
+              Width="110"/>
+        </Grid>
+      </Grid>
+    </DockPanel>
+  </Border>
+</Window>
+"@
+
+#############################################
 ############### Window Setup #################
 #############################################
 # Create a new XML node reader for reading the XAML content
@@ -4148,7 +4457,14 @@ $dg_Files.add_PreviewMouseLeftButtonUp({
 
       if ($header -eq 'Status') {
         if (-not [string]::IsNullOrWhiteSpace($item.StatusDetail)) {
-          [System.Windows.MessageBox]::Show($formCodeSigning, $item.StatusDetail, "Status - $($item.FileName)", 'OK', 'Information') | Out-Null
+          $statusValue = "$($item.Status)"
+          $statusType = switch -Wildcard ($statusValue) {
+            'Failed*' { 'Error'; break }
+            '*untrusted*' { 'Warning'; break }
+            'Signed*' { 'Success'; break }
+            default { 'Info' }
+          }
+          Show-StatusWindow -Message $item.StatusDetail -Title "Status - $($item.FileName)" -Type $statusType -Owner $formCodeSigning | Out-Null
         }
       }
       elseif ($header -eq 'Signed') {
