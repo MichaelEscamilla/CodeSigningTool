@@ -76,6 +76,17 @@ $Script:UpdateCheckHeaders = @{
 }
 # How this script was launched; drives which update action the 'Update Available' click takes.
 $Script:UpdateChannel = $null
+# Right-click menu registration
+$Script:RightClickMenuName = "Sign with Code Signing Tool"
+$Script:RightClickMenuFolderPath = "$env:LOCALAPPDATA\CodeSigningTool"
+# File extensions the right-click menu is registered for (limited to types Set-AuthenticodeSignature can sign).
+$Script:SignableExtensions = @(
+  '.exe', '.dll', '.sys', '.ocx', '.cpl', '.efi',
+  '.msi', '.msp', '.cab', '.cat',
+  '.ps1', '.psm1', '.psd1', '.ps1xml', '.cdxml',
+  '.vbs', '.js', '.wsf',
+  '.appx', '.appxbundle', '.msix', '.msixbundle'
+)
 # Get PowerShell Version
 $Script:ScriptPSVersion = $PSVersionTable.PSVersion
 # Get Pwsh Path
@@ -197,7 +208,8 @@ function Show-UpdateAvailable {
 
 function Get-UpdateChannel {
   # Detects how the script was launched so the update action can match the channel.
-  # Cached once in $Script:UpdateChannel.
+  # Cached once in $Script:UpdateChannel; ordering matters because RightClick and LooseFile
+  # both have a non-empty $PSCommandPath.
   [CmdletBinding()]
   param()
 
@@ -208,14 +220,20 @@ function Get-UpdateChannel {
   else {
     $scriptFolder = Split-Path -Path $PSCommandPath -Parent
 
-    # PowerShell Gallery install: Install-Script location matches where we're running from.
-    $installed = Get-InstalledScript -Name 'CodeSigningTool' -ErrorAction SilentlyContinue
-    if ($installed -and $installed.InstalledLocation -eq $scriptFolder) {
-      $channel = 'PSGallery'
+    # Right-click install: running from the LOCALAPPDATA copy.
+    if ($scriptFolder -eq $Script:RightClickMenuFolderPath) {
+      $channel = 'RightClick'
     }
     else {
-      # Anything else: a loose .ps1 on disk.
-      $channel = 'LooseFile'
+      # PowerShell Gallery install: Install-Script location matches where we're running from.
+      $installed = Get-InstalledScript -Name 'CodeSigningTool' -ErrorAction SilentlyContinue
+      if ($installed -and $installed.InstalledLocation -eq $scriptFolder) {
+        $channel = 'PSGallery'
+      }
+      else {
+        # Anything else: a loose .ps1 on disk.
+        $channel = 'LooseFile'
+      }
     }
   }
 
@@ -289,6 +307,112 @@ function Restart-Script {
   Write-Host "Relaunching updated script: [$ScriptPath]"
   Start-Process -FilePath $CommandExe -ArgumentList $argList
   $formCodeSigning.Close()
+}
+
+function Install-RightClickMenu {
+  # Installs or refreshes the LOCALAPPDATA copy, icon, and per-extension right-click registry entries.
+  # Shared by the Install menu item and the RightClick update path. Returns the LOCALAPPDATA script path.
+  [CmdletBinding()]
+  param(
+    # When set, the menu command pre-selects this certificate via -Thumbprint.
+    [string]$Thumbprint
+  )
+
+  # Create the LOCALAPPDATA folder that holds the launched copy and icon.
+  Write-Host "Creating Folder:       [$($Script:RightClickMenuFolderPath)]"
+  if (-not (Test-Path $Script:RightClickMenuFolderPath)) {
+    $DestinationFolder = New-Item -ItemType Directory -Path $Script:RightClickMenuFolderPath -ErrorAction SilentlyContinue
+  }
+  else {
+    $DestinationFolder = Get-Item -Path $Script:RightClickMenuFolderPath
+  }
+
+  # Write the window icon out as an .ico for the menu entry.
+  $IconFilePath = Join-Path -Path $DestinationFolder.FullName -ChildPath 'CodeSigningTool.ico'
+  Remove-Item $IconFilePath -Force -ErrorAction SilentlyContinue | Out-Null
+  Write-Host "Creating Icon file:    [$IconFilePath]"
+  $IconByteArray = [System.Convert]::FromBase64String($Script:WindowIconBase64)
+  [System.IO.File]::WriteAllBytes($IconFilePath, $IconByteArray)
+
+  $DestinationScriptPath = Join-Path -Path $DestinationFolder.FullName -ChildPath $Script:ScriptName
+
+  # Copy the running script into place, or download it when launched from the web (no file on disk).
+  if (-not [string]::IsNullOrEmpty($PSCommandPath)) {
+    Write-Host "Creating Script:       [$DestinationScriptPath]"
+    Copy-Item -Path $PSCommandPath -Destination $DestinationScriptPath -Force -ErrorAction SilentlyContinue
+  }
+  else {
+    $ScriptURL = "https://raw.githubusercontent.com/$($Script:GitHubRepo)/main/$($Script:ScriptName)"
+    Write-Host "Downloading script:    [$ScriptURL]"
+    try {
+      Invoke-WebRequest -Uri $ScriptURL -OutFile $DestinationScriptPath -UseBasicParsing -ErrorAction Stop
+      Write-Host "Script saved:          [$DestinationScriptPath]"
+    }
+    catch {
+      Write-Host "Failed to download the script: $($_.Exception.Message)"
+    }
+  }
+
+  # Prefer pwsh 7.4+ so the menu launches directly; fall back to Windows PowerShell (always present).
+  if ($Script:PowerShellPath -and $Script:PowerShellPath.Version -ge [Version]"7.4") {
+    $CommandExe = $Script:PowerShellPath.Path
+  }
+  else {
+    $CommandExe = "C:\Windows\system32\WindowsPowerShell\v1.0\powershell.exe"
+  }
+
+  # Pick the icon: prefer the extracted .ico, then pwsh, then Windows PowerShell.
+  if (Test-Path -LiteralPath $IconFilePath) {
+    $IconValue = $IconFilePath
+  }
+  elseif ($Script:PowerShellPath) {
+    $IconValue = $Script:PowerShellPath.Path
+  }
+  else {
+    $IconValue = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+  }
+
+  $CommandLine = "`"$CommandExe`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File `"$DestinationScriptPath`" -Path `"%1`""
+  # Bake in the selected certificate so the right-click launch pre-selects it.
+  if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
+    $CommandLine += " -Thumbprint `"$Thumbprint`""
+    Write-Host "Configured Thumbprint: [$Thumbprint]"
+  }
+  else {
+    Write-Host "Configured Thumbprint: [none]"
+  }
+
+
+  # Register one entry per signable extension under SystemFileAssociations so the menu only appears
+  # on file types the tool can actually sign.
+  foreach ($extension in $Script:SignableExtensions) {
+    $MenuKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Software\Classes\SystemFileAssociations\$extension\shell\$($Script:RightClickMenuName)")
+    $MenuKey.SetValue('', $Script:RightClickMenuName)
+    $MenuKey.SetValue('icon', $IconValue)
+    $CommandKey = $MenuKey.CreateSubKey('command')
+    $CommandKey.SetValue('', $CommandLine)
+    $CommandKey.Close()
+    $MenuKey.Close()
+  }
+  Write-Host "Registry Modified:     [HKCU:\Software\Classes\SystemFileAssociations\<ext>\shell\$($Script:RightClickMenuName)] for $($Script:SignableExtensions.Count) extension(s)"
+  Write-Host "Installation Complete"
+
+  return $DestinationScriptPath
+}
+
+function Uninstall-RightClickMenu {
+  # Removes the per-extension registry entries and the LOCALAPPDATA folder.
+  [CmdletBinding()]
+  param()
+
+  foreach ($extension in $Script:SignableExtensions) {
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree("Software\Classes\SystemFileAssociations\$extension\shell\$($Script:RightClickMenuName)", $false)
+  }
+  Write-Host "Deleted Registry: [HKCU:\Software\Classes\SystemFileAssociations\<ext>\shell\$($Script:RightClickMenuName)]"
+
+  Remove-Item -Path $Script:RightClickMenuFolderPath -Force -Recurse -ErrorAction SilentlyContinue
+  Write-Host "Deleted Folder:   [$($Script:RightClickMenuFolderPath)]"
+  Write-Host "Uninstallation Complete"
 }
 
 function Get-CertCommonName {
@@ -1920,6 +2044,14 @@ function Show-CertificateInformation {
           </StackPanel>
           <Menu DockPanel.Dock="Left"
               VerticalAlignment="Center">
+            <MenuItem Header="Right Click Menu">
+              <MenuItem Name="MenuItem_Install"
+                  Header="Install"/>
+              <MenuItem Name="MenuItem_Uninstall"
+                  Header="Uninstall"/>
+              <MenuItem Name="MenuItem_Open_RCM"
+                  Header="Open Right Click Menu Folder"/>
+            </MenuItem>
             <MenuItem Header="About">
               <MenuItem Name="MenuItem_GitHub"
                   Header="GitHub - CodeSigningTool"/>
@@ -4045,6 +4177,32 @@ $btn_Sign.add_Click({
     Set-StatusMessage -Message $summary -Type $(if ($failed -gt 0) { 'Danger' } else { 'Success' })
   })
 
+#### Right Click Menu Handlers ####
+$MenuItem_Install.add_Click({
+    Write-Host "Menu Item Install Clicked"
+    $thumb = if ($null -ne $Script:SelectedCertificate) { $Script:SelectedCertificate.Thumbprint } else { $null }
+    Install-RightClickMenu -Thumbprint $thumb | Out-Null
+    if ($thumb) {
+      Set-StatusMessage -Message "Right-click menu installed with the selected certificate." -Type 'Success'
+    }
+    else {
+      Set-StatusMessage -Message "Right-click menu installed." -Type 'Success'
+    }
+  })
+
+$MenuItem_Uninstall.add_Click({
+    Write-Host "Menu Item Uninstall Clicked"
+    Uninstall-RightClickMenu
+    Set-StatusMessage -Message "Right-click menu removed." -Type 'Danger'
+  })
+
+$MenuItem_Open_RCM.add_Click({
+    if (-not (Test-Path $Script:RightClickMenuFolderPath)) {
+      New-Item -ItemType Directory -Path $Script:RightClickMenuFolderPath -ErrorAction SilentlyContinue | Out-Null
+    }
+    Invoke-Item -Path $Script:RightClickMenuFolderPath
+  })
+
 #### About Menu Handlers ####
 $MenuItem_CheckForUpdates.add_Click({
     Write-Host "Checking for updates: [$($Script:ReleasesApiUrl)]"
@@ -4071,6 +4229,17 @@ $MenuItem_UpdateAvailable.add_Click({
         # Replace the launched .ps1 in place, then relaunch; fall back to the releases page on failure.
         if ($Script:LatestReleaseTag -and (Update-ScriptFile -ScriptPath $PSCommandPath -Tag $Script:LatestReleaseTag)) {
           Restart-Script -ScriptPath $PSCommandPath
+        }
+        else {
+          Open-ReleasePage
+        }
+      }
+      'RightClick' {
+        # Refresh the LOCALAPPDATA copy and menu entries in place, then relaunch from there.
+        if ($Script:LatestReleaseTag -and (Update-ScriptFile -ScriptPath $PSCommandPath -Tag $Script:LatestReleaseTag)) {
+          $thumb = if ($null -ne $Script:SelectedCertificate) { $Script:SelectedCertificate.Thumbprint } else { $null }
+          $updatedPath = Install-RightClickMenu -Thumbprint $thumb
+          Restart-Script -ScriptPath $updatedPath
         }
         else {
           Open-ReleasePage
