@@ -3985,6 +3985,38 @@ $formCodeSigning.Add_Loaded({
     $formCodeSigning.Dispatcher.InvokeAsync({
         Start-BackgroundUpdateCheck
       }, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle) | Out-Null
+
+    # Pre-fill from parameters. Cheap field updates happen now; the certificate store lookup and
+    # per-file signature reads are deferred to Background priority so the window paints first.
+    if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
+      $txt_TimestampServer.Text = $TimestampServer
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
+      $txt_Thumbprint.Text = $Thumbprint
+      # A SHA-1 thumbprint is 40 hex characters once separators/spaces are stripped.
+      if ((($Thumbprint -replace '[^0-9A-Fa-f]', '').Length) -ne 40) {
+        Set-StatusText -Target $txtblk_CertInfo -Message "Invalid thumbprint  |  must be 40 hexadecimal characters" -Type 'Danger'
+      }
+    }
+
+    if ((-not [string]::IsNullOrWhiteSpace($Thumbprint)) -or $Path) {
+      $formCodeSigning.Dispatcher.InvokeAsync({
+          $cleanThumbprint = ($Thumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+          if ($cleanThumbprint.Length -eq 40) {
+            $preCert = Get-SigningCertificateByThumbprint -Thumbprint $cleanThumbprint
+            if ($null -ne $preCert) {
+              & $Script:ApplyCertificate $preCert
+            }
+            else {
+              Set-StatusText -Target $txtblk_CertInfo -Message "Certificate not found  |  not in CurrentUser or LocalMachine store" -Type 'Danger'
+            }
+          }
+          if ($Path) {
+            & $Script:AddFilesToList $Path
+          }
+        }, [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
+    }
   })
 
 #### Button Handlers ####
@@ -4267,36 +4299,6 @@ $titlebar_Close.add_Click({
 
 # Set the PowerShell Window Title
 $Host.UI.RawUI.WindowTitle = "Code Signing Tool"
-
-#############################################
-########## Pre-fill From Parameters #########
-#############################################
-if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
-  $txt_TimestampServer.Text = $TimestampServer
-}
-
-if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
-  $txt_Thumbprint.Text = $Thumbprint
-  # A SHA-1 thumbprint is 40 hex characters once separators/spaces are stripped.
-  $cleanThumbprint = ($Thumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
-
-  if ($cleanThumbprint.Length -ne 40) {
-    Set-StatusText -Target $txtblk_CertInfo -Message "Invalid thumbprint  |  must be 40 hexadecimal characters" -Type 'Danger'
-  }
-  else {
-    $preCert = Get-SigningCertificateByThumbprint -Thumbprint $cleanThumbprint
-    if ($null -ne $preCert) {
-      & $Script:ApplyCertificate $preCert
-    }
-    else {
-      Set-StatusText -Target $txtblk_CertInfo -Message "Certificate not found  |  not in CurrentUser or LocalMachine store" -Type 'Danger'
-    }
-  }
-}
-
-if ($Path) {
-  & $Script:AddFilesToList $Path
-}
 
 #Show the WPF Window
 $formCodeSigning.Add_ContentRendered({
