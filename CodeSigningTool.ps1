@@ -3926,32 +3926,62 @@ $Script:ApplyCertificate = {
 $Script:AddFilesToList = {
   param([string[]]$Paths)
 
+  $candidates = @($Paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($candidates.Count -eq 0) { return }
+  $total = $candidates.Count
+
+  # Reading each file's signature runs on the UI thread and can be slow (many files / network paths),
+  # so surface a wait cursor and a per-file progress message that repaints instead of freezing silently.
+  $restText = $txtblk_StatusBar.Text
+  $restBrush = $txtblk_StatusBar.Foreground
+  $restWeight = $txtblk_StatusBar.FontWeight
+  $previousCursor = $formCodeSigning.Cursor
+  $formCodeSigning.Cursor = [System.Windows.Input.Cursors]::Wait
+  $accentBrush = $formCodeSigning.FindResource('Accent')
+
   $added = 0
-  foreach ($p in $Paths) {
-    if ([string]::IsNullOrWhiteSpace($p)) { continue }
-    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
-    $full = (Resolve-Path -LiteralPath $p).Path
+  try {
+    $index = 0
+    foreach ($p in $candidates) {
+      $index++
+      $txtblk_StatusBar.Text = "Loading $index of $total file(s)..."
+      $txtblk_StatusBar.Foreground = $accentBrush
+      $txtblk_StatusBar.FontWeight = [System.Windows.FontWeights]::SemiBold
+      # Flush the render queue so the message actually paints before the next (blocking) signature read.
+      $formCodeSigning.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
 
-    $exists = $false
-    foreach ($f in $Script:FilesCollection) { if ($f.FullPath -eq $full) { $exists = $true; break } }
-    if ($exists) { continue }
+      if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+      $full = (Resolve-Path -LiteralPath $p).Path
 
-    $sig = Get-FileSignatureInfo -Path $full
-    $signedValue = 'No'
-    if ($null -ne $sig -and $null -ne $sig.SignerCertificate) {
-      # Untrusted/unverified self-signed still counts as signed; only broken signatures show as Invalid.
-      $signedValue = if ("$($sig.Status)" -in 'Valid', 'UnknownError', 'NotTrusted') { 'Yes' } else { 'Invalid' }
+      $exists = $false
+      foreach ($f in $Script:FilesCollection) { if ($f.FullPath -eq $full) { $exists = $true; break } }
+      if ($exists) { continue }
+
+      $sig = Get-FileSignatureInfo -Path $full
+      $signedValue = 'No'
+      if ($null -ne $sig -and $null -ne $sig.SignerCertificate) {
+        # Untrusted/unverified self-signed still counts as signed; only broken signatures show as Invalid.
+        $signedValue = if ("$($sig.Status)" -in 'Valid', 'UnknownError', 'NotTrusted') { 'Yes' } else { 'Invalid' }
+      }
+
+      $Script:FilesCollection.Add([PSCustomObject]@{
+          FileName     = [System.IO.Path]::GetFileName($full)
+          FullPath     = $full
+          Signed       = $signedValue
+          Status       = 'Pending'
+          StatusDetail = 'Pending'
+        })
+      $added++
     }
-
-    $Script:FilesCollection.Add([PSCustomObject]@{
-        FileName     = [System.IO.Path]::GetFileName($full)
-        FullPath     = $full
-        Signed       = $signedValue
-        Status       = 'Pending'
-        StatusDetail = 'Pending'
-      })
-    $added++
   }
+  finally {
+    $formCodeSigning.Cursor = $previousCursor
+    # Restore the resting bar so the queued-count flash reverts to the correct baseline afterward.
+    $txtblk_StatusBar.Text = $restText
+    $txtblk_StatusBar.Foreground = $restBrush
+    $txtblk_StatusBar.FontWeight = $restWeight
+  }
+
   if ($added -gt 0) {
     Set-StatusMessage -Message "$($Script:FilesCollection.Count) file(s) queued." -Type 'Muted'
   }
