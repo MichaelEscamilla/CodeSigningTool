@@ -315,7 +315,9 @@ function Restart-Script {
 
 function Restart-ScriptAsAdministrator {
   [CmdletBinding()]
-  param()
+  param(
+    [System.Windows.Window]$WindowToClose
+  )
 
   if (Test-IsAdministrator) { return }
 
@@ -339,6 +341,7 @@ function Restart-ScriptAsAdministrator {
 
   try {
     Start-Process -FilePath $CommandExe -ArgumentList $ArgumentList -Verb RunAs -ErrorAction Stop | Out-Null
+    if ($WindowToClose) { $WindowToClose.Close() }
     $formCodeSigning.Close()
   }
   catch {
@@ -1070,6 +1073,7 @@ function Show-CertificateCreator {
   $chk_SkipTrustedPublisher = $creatorWindow.FindName('chk_SkipTrustedPublisher')
   $btn_Generate = $creatorWindow.FindName('btn_Generate')
   $btn_CancelCreate = $creatorWindow.FindName('btn_CancelCreate')
+  $btn_RestartAsAdministrator = $creatorWindow.FindName('btn_RestartAsAdministrator')
   $titlebar = $creatorWindow.FindName('titlebar')
   $titlebar_Close = $creatorWindow.FindName('titlebar_Close')
   $txtblk_StatusBar = $creatorWindow.FindName('txtblk_StatusBar')
@@ -1081,9 +1085,11 @@ function Show-CertificateCreator {
     $store = if ($cmb_Store.SelectedItem) { $cmb_Store.SelectedItem.Content } else { 'CurrentUser' }
     if ($store -eq 'LocalMachine' -and -not (Test-IsAdministrator)) {
       Set-StatusText -Target $txtblk_StatusBar -Message 'LocalMachine requires running as administrator.' -Type 'Danger'
+      $btn_RestartAsAdministrator.Visibility = [System.Windows.Visibility]::Visible
     }
     else {
       Set-StatusText -Target $txtblk_StatusBar -Message '' -Type 'Muted'
+      $btn_RestartAsAdministrator.Visibility = [System.Windows.Visibility]::Collapsed
     }
   }
 
@@ -1194,6 +1200,7 @@ function Show-CertificateCreator {
   $btn_YearsUp.add_Click({ & $adjustYears 1 })
   $btn_YearsDown.add_Click({ & $adjustYears -1 })
   $cmb_Store.add_SelectionChanged($updateStoreHint)
+  $btn_RestartAsAdministrator.add_Click({ Restart-ScriptAsAdministrator -WindowToClose $creatorWindow })
   $btn_Generate.add_Click($generate)
   $btn_CancelCreate.add_Click({ $creatorWindow.DialogResult = $false })
   $titlebar_Close.add_Click({ $creatorWindow.DialogResult = $false })
@@ -3719,6 +3726,13 @@ function Show-ConfirmWindow {
             Orientation="Horizontal"
             HorizontalAlignment="Right"
             Margin="0,16,0,0">
+          <Button Name="btn_RestartAsAdministrator"
+              Content="Restart as Administrator"
+              Visibility="Collapsed"
+              Background="{StaticResource Accent}"
+              Foreground="{StaticResource AccentText}"
+              FontWeight="Bold"
+              Margin="2.5,2.5,12,2.5"/>
           <Button Name="btn_CancelCreate"
               Content="Cancel"
               Width="110"/>
