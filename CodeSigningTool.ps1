@@ -313,6 +313,39 @@ function Restart-Script {
   $formCodeSigning.Close()
 }
 
+function Restart-ScriptAsAdministrator {
+  [CmdletBinding()]
+  param()
+
+  if (Test-IsAdministrator) { return }
+
+  if ($Script:PowerShellPath -and $Script:PowerShellPath.Version -ge [Version]"7.4") {
+    $CommandExe = $Script:PowerShellPath.Path
+  }
+  else {
+    $CommandExe = "C:\Windows\system32\WindowsPowerShell\v1.0\powershell.exe"
+  }
+
+  $ArgumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Minimized', '-File', "`"$PSCommandPath`"")
+  foreach ($FilePath in $Path) {
+    $ArgumentList += @('-Path', "`"$FilePath`"")
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
+    $ArgumentList += @('-Thumbprint', "`"$Thumbprint`"")
+  }
+  if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
+    $ArgumentList += @('-TimestampServer', "`"$TimestampServer`"")
+  }
+
+  try {
+    Start-Process -FilePath $CommandExe -ArgumentList $ArgumentList -Verb RunAs -ErrorAction Stop | Out-Null
+    $formCodeSigning.Close()
+  }
+  catch {
+    Set-StatusMessage -Message "Unable to relaunch as administrator: $($_.Exception.Message)" -Type 'Danger'
+  }
+}
+
 function Install-RightClickMenu {
   # Installs or refreshes the LOCALAPPDATA copy, icon, and per-extension right-click registry entries.
   # Shared by the Install menu item and the RightClick update path. Returns the LOCALAPPDATA script path.
@@ -2385,6 +2418,8 @@ function Show-ConfirmWindow {
                   Header="michaeltheadmin.com"/>
               <MenuItem Name="MenuItem_CheckForUpdates"
                   Header="Check for Updates"/>
+                <MenuItem Name="MenuItem_RunAsAdministrator"
+                  Header="Run as Administrator"/>
               <Separator/>
               <MenuItem Name="MenuItem_Version"
                   Header="Version 1.0.0"
@@ -4859,6 +4894,9 @@ $formCodeSigning.Add_Loaded({
     $formCodeSigning.Title = "Code Signing Tool - Version $($ScriptVersion)"
     $MenuItem_Version.Header = "Version $($ScriptVersion)"
     $txtblk_TitleVersion.Text = " $($ScriptVersion)"
+    if (Test-IsAdministrator) {
+      $MenuItem_RunAsAdministrator.Visibility = [System.Windows.Visibility]::Collapsed
+    }
 
     # Defer the update check until the window has rendered and come to the foreground.
     $formCodeSigning.Dispatcher.InvokeAsync({
@@ -5179,6 +5217,10 @@ $MenuItem_Open_RCM.add_Click({
 $MenuItem_CheckForUpdates.add_Click({
     Write-Host "Checking for updates: [$($Script:ReleasesApiUrl)]"
     Start-BackgroundUpdateCheck -Manual
+  })
+
+$MenuItem_RunAsAdministrator.add_Click({
+    Restart-ScriptAsAdministrator
   })
 
 $MenuItem_UpdateAvailable.add_Click({
