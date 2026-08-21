@@ -961,9 +961,6 @@ function Invoke-CodeSignature {
     $signature = Set-AuthenticodeSignature @signParams
     $applied = ($null -ne $signature.SignerCertificate)
 
-    Write-Host "Signing: [$Path]"
-    $signature | Format-List * | Out-String | Write-Host
-
     return [PSCustomObject]@{
       Success = $applied
       Status  = $signature.Status
