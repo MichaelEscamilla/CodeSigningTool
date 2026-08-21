@@ -2453,7 +2453,7 @@ function Show-ConfirmWindow {
             </DataGridTextColumn>
             <DataGridTextColumn Header="Full Path"
                 Binding="{Binding FullPath}"
-                Width="*"/>
+                Width="Auto"/>
           </DataGrid.Columns>
         </DataGrid>
 
@@ -4811,6 +4811,35 @@ $dg_Files.add_Drop({
     if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) {
       & $Script:AddFilesToList $e.Data.GetData([System.Windows.DataFormats]::FileDrop)
     }
+  })
+
+# Finds the DataGrid's inner ScrollViewer so the mouse wheel can drive horizontal scrolling.
+$Script:GetDataGridScrollViewer = {
+  param($Root)
+  $count = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($Root)
+  for ($i = 0; $i -lt $count; $i++) {
+    $child = [System.Windows.Media.VisualTreeHelper]::GetChild($Root, $i)
+    if ($child -is [System.Windows.Controls.ScrollViewer]) { return $child }
+    $found = & $Script:GetDataGridScrollViewer $child
+    if ($null -ne $found) { return $found }
+  }
+  return $null
+}
+
+# Shift+wheel scrolls horizontally; a plain wheel also scrolls horizontally when there are no rows to scroll vertically.
+$dg_Files.add_PreviewMouseWheel({
+    param($sender, $e)
+    try {
+      $sv = & $Script:GetDataGridScrollViewer $sender
+      if ($null -eq $sv) { return }
+      $shift = [System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift
+      if ($shift -or $sv.ScrollableHeight -le 0) {
+        $step = 48 * [Math]::Sign($e.Delta)
+        $sv.ScrollToHorizontalOffset($sv.HorizontalOffset - $step)
+        $e.Handled = $true
+      }
+    }
+    catch { }
   })
 
 # Selection changes on mouse-down, so capture whether the clicked row was already the sole selection.
