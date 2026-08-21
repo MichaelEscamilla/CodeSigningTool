@@ -4830,8 +4830,8 @@ $Script:ApplyCertificate = {
     Set-StatusMessage -Message "Warning: $problem" -Type 'Danger'
   }
   else {
-    Set-StatusText -Target $txtblk_CertInfo -Message "$subject  |  Valid for code signing  |  Expires $expires" -Type 'Success'
-    Set-StatusMessage -Message "Selected certificate: $subject" -Type 'Success'
+    Set-StatusText -Target $txtblk_CertInfo -Message "Valid for code signing  |  Expires $expires" -Type 'Success'
+    Set-StatusMessage -Message "Selected certificate: $($Certificate.Thumbprint)" -Type 'Success'
   }
 }
 
