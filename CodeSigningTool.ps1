@@ -76,6 +76,8 @@ $Script:UpdateCheckHeaders = @{
 }
 # How this script was launched; drives which update action the 'Update Available' click takes.
 $Script:UpdateChannel = $null
+# Ensures the automatic startup update check runs only once, even if Window.Loaded fires again.
+$Script:StartupUpdateCheckDone = $false
 # Right-click menu registration
 $Script:RightClickMenuName = "Sign with Code Signing Tool"
 $Script:RightClickMenuFolderPath = "$env:LOCALAPPDATA\CodeSigningTool"
@@ -143,8 +145,11 @@ function Start-BackgroundUpdateCheck {
   [CmdletBinding()]
   param([switch]$Manual)
 
+  # The automatic startup check runs at most once per app lifetime; manual menu clicks always run.
+  if (-not $Manual -and $Script:StartupUpdateCheckDone) { return }
   # Don't start a second check while one is still running (e.g. manual click during the startup check).
   if ($Script:UpdateHandle -and -not $Script:UpdateHandle.IsCompleted) { return }
+  if (-not $Manual) { $Script:StartupUpdateCheckDone = $true }
   $Script:UpdateCheckManual = $Manual.IsPresent
 
   # Detect the distribution channel once so the update click is a cheap lookup.
