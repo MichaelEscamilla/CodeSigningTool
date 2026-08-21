@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 2026.8.19.0
+.VERSION 2026.8.20.0
 
 .GUID 6f2c1e5a-8b3d-4c7e-9a1f-2d4e6b8c0a3f
 
@@ -25,6 +25,8 @@
 .EXTERNALSCRIPTDEPENDENCIES
 
 .RELEASENOTES
+2026.8.20.0   - Applied themed accent scrollbars to the certificate DataGrid.
+                Added a Right Click Menu to install/remove Windows Explorer context-menu entries for signing files with the selected certificate.
 2026.8.19.0   - Initial scaffold. Loads the themed window only.
                 Added listing of available code-signing certificates from the CurrentUser and LocalMachine personal stores.
                 Reworked the main window to a thumbprint field with a 'Select Certificate' button that opens a certificate picker pop-up.
@@ -64,7 +66,7 @@ param (
 # Script Name
 $Script:ScriptName = "CodeSigningTool.ps1"
 # Script Version
-[System.Version]$Script:ScriptVersion = "2026.8.19.0"
+[System.Version]$Script:ScriptVersion = "2026.8.20.0"
 # GitHub Repository (used for the update check)
 $Script:GitHubRepo = "MichaelEscamilla/CodeSigningTool"
 $Script:ReleasesApiUrl = "https://api.github.com/repos/$Script:GitHubRepo/releases/latest"
