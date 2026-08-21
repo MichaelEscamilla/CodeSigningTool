@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 2026.8.20.0
+.VERSION 2026.8.21.0
 
 .GUID 6f2c1e5a-8b3d-4c7e-9a1f-2d4e6b8c0a3f
 
@@ -25,6 +25,11 @@
 .EXTERNALSCRIPTDEPENDENCIES
 
 .RELEASENOTES
+2026.8.21.0   - Added a 'Run as Administrator' option to relaunch the tool elevated, keeping your loaded files, thumbprint, and timestamp server.
+                Certificate window now shows the certificate's Friendly Name and an overall Certificate Chain trust result.
+                Made the main window resizable and the file list scroll more smoothly.
+                Certificate status now shows the thumbprint.
+                Sped up startup by detecting the update channel only when needed.
 2026.8.20.0   - Applied themed accent scrollbars to the certificate DataGrid.
                 Added a Right Click Menu to install/remove Windows Explorer context-menu entries for signing files with the selected certificate.
 2026.8.19.0   - Initial scaffold. Loads the themed window only.
@@ -66,7 +71,7 @@ param (
 # Script Name
 $Script:ScriptName = "CodeSigningTool.ps1"
 # Script Version
-[System.Version]$Script:ScriptVersion = "2026.8.20.0"
+[System.Version]$Script:ScriptVersion = "2026.8.21.0"
 # GitHub Repository (used for the update check)
 $Script:GitHubRepo = "MichaelEscamilla/CodeSigningTool"
 $Script:ReleasesApiUrl = "https://api.github.com/repos/$Script:GitHubRepo/releases/latest"
