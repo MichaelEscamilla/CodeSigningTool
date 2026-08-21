@@ -154,9 +154,6 @@ function Start-BackgroundUpdateCheck {
   if (-not $Manual) { $Script:StartupUpdateCheckDone = $true }
   $Script:UpdateCheckManual = $Manual.IsPresent
 
-  # Detect the distribution channel once so the update click is a cheap lookup.
-  if (-not $Script:UpdateChannel) { $Script:UpdateChannel = Get-UpdateChannel }
-
   try {
     $Script:UpdatePowerShell = [powershell]::Create()
     $Script:UpdatePowerShell.AddScript($Script:TestForUpdate).
@@ -5185,6 +5182,9 @@ $MenuItem_CheckForUpdates.add_Click({
   })
 
 $MenuItem_UpdateAvailable.add_Click({
+    # Detect the distribution channel lazily; it can call Get-InstalledScript (slow on first use),
+    # so it's kept off the startup path to avoid a busy cursor while the window loads.
+    if (-not $Script:UpdateChannel) { $Script:UpdateChannel = Get-UpdateChannel }
     switch ($Script:UpdateChannel) {
       'PSGallery' {
         # Let the Gallery replace the installed copy, then relaunch from its location.
