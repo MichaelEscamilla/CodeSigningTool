@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 2026.8.20.0
+.VERSION 2026.8.21.0
 
 .GUID 6f2c1e5a-8b3d-4c7e-9a1f-2d4e6b8c0a3f
 
@@ -25,6 +25,11 @@
 .EXTERNALSCRIPTDEPENDENCIES
 
 .RELEASENOTES
+2026.8.21.0   - Added a 'Run as Administrator' option to relaunch the tool elevated, keeping your loaded files, thumbprint, and timestamp server.
+                Certificate window now shows the certificate's Friendly Name and an overall Certificate Chain trust result.
+                Made the main window resizable and the file list scroll more smoothly.
+                Certificate status now shows the thumbprint.
+                Sped up startup by detecting the update channel only when needed.
 2026.8.20.0   - Applied themed accent scrollbars to the certificate DataGrid.
                 Added a Right Click Menu to install/remove Windows Explorer context-menu entries for signing files with the selected certificate.
 2026.8.19.0   - Initial scaffold. Loads the themed window only.
@@ -66,7 +71,7 @@ param (
 # Script Name
 $Script:ScriptName = "CodeSigningTool.ps1"
 # Script Version
-[System.Version]$Script:ScriptVersion = "2026.8.20.0"
+[System.Version]$Script:ScriptVersion = "2026.8.21.0"
 # GitHub Repository (used for the update check)
 $Script:GitHubRepo = "MichaelEscamilla/CodeSigningTool"
 $Script:ReleasesApiUrl = "https://api.github.com/repos/$Script:GitHubRepo/releases/latest"
@@ -153,9 +158,6 @@ function Start-BackgroundUpdateCheck {
   if ($Script:UpdateHandle -and -not $Script:UpdateHandle.IsCompleted) { return }
   if (-not $Manual) { $Script:StartupUpdateCheckDone = $true }
   $Script:UpdateCheckManual = $Manual.IsPresent
-
-  # Detect the distribution channel once so the update click is a cheap lookup.
-  if (-not $Script:UpdateChannel) { $Script:UpdateChannel = Get-UpdateChannel }
 
   try {
     $Script:UpdatePowerShell = [powershell]::Create()
@@ -314,6 +316,55 @@ function Restart-Script {
   Write-Host "Relaunching updated script: [$ScriptPath]"
   Start-Process -FilePath $CommandExe -ArgumentList $argList
   $formCodeSigning.Close()
+}
+
+function Restart-ScriptAsAdministrator {
+  [CmdletBinding()]
+  param(
+    [System.Windows.Window]$WindowToClose,
+    # Default to the current UI state so every restart reloads identical settings; callers can override.
+    [string[]]$PathsToPreserve = @($Script:FilesCollection | ForEach-Object { $_.FullPath }),
+    [string]$ThumbprintToPreserve = $txt_Thumbprint.Text,
+    [string]$TimestampServerToPreserve = $txt_TimestampServer.Text
+  )
+
+  if (Test-IsAdministrator) { return }
+
+  if ($Script:PowerShellPath -and $Script:PowerShellPath.Version -ge [Version]"7.4") {
+    $CommandExe = $Script:PowerShellPath.Path
+  }
+  else {
+    $CommandExe = "C:\Windows\system32\WindowsPowerShell\v1.0\powershell.exe"
+  }
+
+  $PathsToRelaunch = @($PathsToPreserve) | Select-Object -Unique
+
+  # Relaunch via -Command (not -File): -File passes every token as a literal string, so a
+  # multi-path array can't be reconstructed. -Command parses the tail as PowerShell, so a
+  # comma-separated, single-quoted list binds correctly to the [string[]]$Path parameter.
+  $commandParts = @("& '$($PSCommandPath.Replace("'", "''"))'")
+  if ($PathsToRelaunch.Count -gt 0) {
+    $quotedPaths = ($PathsToRelaunch | ForEach-Object { "'$($_.Replace("'", "''"))'" }) -join ','
+    $commandParts += "-Path $quotedPaths"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ThumbprintToPreserve)) {
+    $commandParts += "-Thumbprint '$($ThumbprintToPreserve.Replace("'", "''"))'"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($TimestampServerToPreserve)) {
+    $commandParts += "-TimestampServer '$($TimestampServerToPreserve.Replace("'", "''"))'"
+  }
+  $command = $commandParts -join ' '
+
+  $argList = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -Command `"$command`""
+
+  try {
+    Start-Process -FilePath $CommandExe -ArgumentList $argList -Verb RunAs -ErrorAction Stop | Out-Null
+    if ($WindowToClose) { $WindowToClose.Close() }
+    $formCodeSigning.Close()
+  }
+  catch {
+    Set-StatusMessage -Message "Unable to relaunch as administrator: $($_.Exception.Message)" -Type 'Danger'
+  }
 }
 
 function Install-RightClickMenu {
@@ -915,9 +966,6 @@ function Invoke-CodeSignature {
     $signature = Set-AuthenticodeSignature @signParams
     $applied = ($null -ne $signature.SignerCertificate)
 
-    Write-Host "Signing: [$Path]"
-    $signature | Format-List * | Out-String | Write-Host
-
     return [PSCustomObject]@{
       Success = $applied
       Status  = $signature.Status
@@ -1040,6 +1088,7 @@ function Show-CertificateCreator {
   $chk_SkipTrustedPublisher = $creatorWindow.FindName('chk_SkipTrustedPublisher')
   $btn_Generate = $creatorWindow.FindName('btn_Generate')
   $btn_CancelCreate = $creatorWindow.FindName('btn_CancelCreate')
+  $btn_RestartAsAdministrator = $creatorWindow.FindName('btn_RestartAsAdministrator')
   $titlebar = $creatorWindow.FindName('titlebar')
   $titlebar_Close = $creatorWindow.FindName('titlebar_Close')
   $txtblk_StatusBar = $creatorWindow.FindName('txtblk_StatusBar')
@@ -1051,9 +1100,11 @@ function Show-CertificateCreator {
     $store = if ($cmb_Store.SelectedItem) { $cmb_Store.SelectedItem.Content } else { 'CurrentUser' }
     if ($store -eq 'LocalMachine' -and -not (Test-IsAdministrator)) {
       Set-StatusText -Target $txtblk_StatusBar -Message 'LocalMachine requires running as administrator.' -Type 'Danger'
+      $btn_RestartAsAdministrator.Visibility = [System.Windows.Visibility]::Visible
     }
     else {
       Set-StatusText -Target $txtblk_StatusBar -Message '' -Type 'Muted'
+      $btn_RestartAsAdministrator.Visibility = [System.Windows.Visibility]::Collapsed
     }
   }
 
@@ -1164,6 +1215,9 @@ function Show-CertificateCreator {
   $btn_YearsUp.add_Click({ & $adjustYears 1 })
   $btn_YearsDown.add_Click({ & $adjustYears -1 })
   $cmb_Store.add_SelectionChanged($updateStoreHint)
+  $btn_RestartAsAdministrator.add_Click({
+      Restart-ScriptAsAdministrator -WindowToClose $creatorWindow
+    })
   $btn_Generate.add_Click($generate)
   $btn_CancelCreate.add_Click({ $creatorWindow.DialogResult = $false })
   $titlebar_Close.add_Click({ $creatorWindow.DialogResult = $false })
@@ -1205,6 +1259,7 @@ function Show-CertificateInformation {
   [System.Windows.Window]$viewerWindow = [Windows.Markup.XamlReader]::Load($readerViewer)
 
   # Resolve the controls used by this window
+  $txt_FriendlyName = $viewerWindow.FindName('txt_FriendlyName')
   $txt_Issuer = $viewerWindow.FindName('txt_Issuer')
   $txt_Subject = $viewerWindow.FindName('txt_Subject')
   $txt_Effective = $viewerWindow.FindName('txt_Effective')
@@ -1215,6 +1270,8 @@ function Show-CertificateInformation {
   $icn_TrustedPublisher = $viewerWindow.FindName('icn_TrustedPublisher')
   $icn_TrustedRoot = $viewerWindow.FindName('icn_TrustedRoot')
   $icn_SelfSigned = $viewerWindow.FindName('icn_SelfSigned')
+  $icn_ChainTrusted = $viewerWindow.FindName('icn_ChainTrusted')
+  $txt_ChainStatus = $viewerWindow.FindName('txt_ChainStatus')
   $btn_Validate = $viewerWindow.FindName('btn_Validate')
   $btn_Close = $viewerWindow.FindName('btn_Close')
   $titlebar = $viewerWindow.FindName('titlebar')
@@ -1240,6 +1297,7 @@ function Show-CertificateInformation {
     }
   }
 
+  $txt_FriendlyName.Text = if ([string]::IsNullOrWhiteSpace($Certificate.FriendlyName)) { '(none)' } else { $Certificate.FriendlyName }
   $txt_Issuer.Text = $Certificate.Issuer
   $txt_Subject.Text = $Certificate.Subject
   $txt_Effective.Text = $Certificate.NotBefore.ToString('g')
@@ -1251,6 +1309,18 @@ function Show-CertificateInformation {
   & $setStatusIcon $icn_TrustedPublisher ([bool](Test-CertificateInStore -Certificate $Certificate -StoreName 'TrustedPublisher'))
   & $setStatusIcon $icn_TrustedRoot ([bool](Test-CertificateInStore -Certificate $Certificate -StoreName 'Root'))
   & $setStatusIcon $icn_SelfSigned ([bool]($Certificate.Subject -eq $Certificate.Issuer))
+
+  # Build the chain up-front so the header reflects real trust (chains to a trusted root), not just leaf-in-store.
+  $chainForStatus = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+  try {
+    $chainTrusted = [bool]$chainForStatus.Build($Certificate)
+    & $setStatusIcon $icn_ChainTrusted $chainTrusted
+    $txt_ChainStatus.Text = if ($chainTrusted) { 'Trusted' } else { 'Not trusted' }
+    $txt_ChainStatus.Foreground = if ($chainTrusted) { $viewerWindow.FindResource('Success') } else { $viewerWindow.FindResource('Danger') }
+  }
+  finally {
+    $chainForStatus.Reset()
+  }
 
   # When a file signature is supplied, reveal and populate the Signature section.
   if ($null -ne $Signature) {
@@ -1522,8 +1592,10 @@ function Show-ConfirmWindow {
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   Name="form1"
   Width="1070"
-  Height="620"
-  ResizeMode="NoResize"
+  Height="670"
+  MinWidth="1070"
+  MinHeight="670"
+  ResizeMode="CanResizeWithGrip"
   WindowStyle="None"
   AllowsTransparency="True"
   Background="Transparent"
@@ -2388,6 +2460,8 @@ function Show-ConfirmWindow {
                   Header="michaeltheadmin.com"/>
               <MenuItem Name="MenuItem_CheckForUpdates"
                   Header="Check for Updates"/>
+                <MenuItem Name="MenuItem_RunAsAdministrator"
+                  Header="Run as Administrator"/>
               <Separator/>
               <MenuItem Name="MenuItem_Version"
                   Header="Version 1.0.0"
@@ -2503,6 +2577,7 @@ function Show-ConfirmWindow {
             BorderThickness="1"
             CornerRadius="8"
             Padding="16">
+          <StackPanel>
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
@@ -2520,6 +2595,12 @@ function Show-ConfirmWindow {
                 Margin="10,0,0,0"
                 VerticalAlignment="Center"/>
           </Grid>
+          <TextBlock Foreground="{StaticResource TextMuted}"
+              FontSize="12"
+              TextWrapping="Wrap"
+              Margin="0,12,0,0"
+              Text="A timestamp records when the file was signed, so the signature stays valid even after the signing certificate expires."/>
+          </StackPanel>
         </Border>
 
         <!-- Files header -->
@@ -2546,7 +2627,8 @@ function Show-ConfirmWindow {
 
         <DataGrid Grid.Row="5"
             Name="dg_Files"
-            AllowDrop="True">
+            AllowDrop="True"
+            VirtualizingPanel.ScrollUnit="Pixel">
           <DataGrid.Columns>
             <DataGridTextColumn Header="File"
                 Binding="{Binding FileName}"
@@ -3687,6 +3769,13 @@ function Show-ConfirmWindow {
             Orientation="Horizontal"
             HorizontalAlignment="Right"
             Margin="0,16,0,0">
+          <Button Name="btn_RestartAsAdministrator"
+              Content="Restart as Administrator"
+              Visibility="Collapsed"
+              Background="{StaticResource Accent}"
+              Foreground="{StaticResource AccentText}"
+              FontWeight="Bold"
+              Margin="2.5,2.5,12,2.5"/>
           <Button Name="btn_CancelCreate"
               Content="Cancel"
               Width="110"/>
@@ -4059,6 +4148,7 @@ function Show-ConfirmWindow {
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
               </Grid.RowDefinitions>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="120"/>
@@ -4067,62 +4157,71 @@ function Show-ConfirmWindow {
 
               <Label Grid.Row="0"
                   Grid.Column="0"
-                  Content="Issuer:"
+                  Content="Friendly Name:"
                   Margin="0,0,10,0"/>
               <TextBox Grid.Row="0"
                   Grid.Column="1"
-                  Name="txt_Issuer"/>
+                  Name="txt_FriendlyName"/>
 
               <Label Grid.Row="1"
                   Grid.Column="0"
-                  Content="Subject:"
+                  Content="Issuer:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="1"
                   Grid.Column="1"
-                  Name="txt_Subject"
+                  Name="txt_Issuer"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="2"
                   Grid.Column="0"
-                  Content="Effective Date:"
+                  Content="Subject:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="2"
                   Grid.Column="1"
-                  Name="txt_Effective"
+                  Name="txt_Subject"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="3"
                   Grid.Column="0"
-                  Content="Expiration Date:"
+                  Content="Effective Date:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="3"
                   Grid.Column="1"
-                  Name="txt_Expiration"
+                  Name="txt_Effective"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="4"
                   Grid.Column="0"
-                  Content="Cert Usage:"
+                  Content="Expiration Date:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="4"
                   Grid.Column="1"
-                  Name="txt_Usage"
+                  Name="txt_Expiration"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="5"
                   Grid.Column="0"
-                  Content="Public Key:"
+                  Content="Cert Usage:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="5"
                   Grid.Column="1"
-                  Name="txt_PublicKey"
+                  Name="txt_Usage"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="6"
                   Grid.Column="0"
-                  Content="Thumbprint:"
+                  Content="Public Key:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="6"
+                  Grid.Column="1"
+                  Name="txt_PublicKey"
+                  Margin="0,10,0,0"/>
+
+              <Label Grid.Row="7"
+                  Grid.Column="0"
+                  Content="Thumbprint:"
+                  Margin="0,10,10,0"/>
+              <TextBox Grid.Row="7"
                   Grid.Column="1"
                   Name="txt_Thumbprint"
                   Margin="0,10,0,0"/>
@@ -4130,13 +4229,38 @@ function Show-ConfirmWindow {
         </Border>
 
         <!-- Trust status -->
-        <Border Grid.Row="3"
-            Background="{StaticResource Surface}"
-            BorderBrush="{StaticResource Border}"
-            BorderThickness="1"
-            CornerRadius="8"
-            Padding="16"
+        <StackPanel Grid.Row="3"
             Margin="0,12,0,0">
+          <TextBlock Style="{StaticResource SectionHeader}"
+              Text="Trust Status"
+              Margin="0,0,0,8"/>
+          <Border Background="{StaticResource Surface}"
+              BorderBrush="{StaticResource Border}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="16">
+          <StackPanel>
+          <StackPanel Orientation="Horizontal"
+              Margin="0,0,0,12">
+            <TextBlock Text="Certificate Chain:"
+                Foreground="{StaticResource Text}"
+                FontWeight="SemiBold"
+                VerticalAlignment="Center"/>
+            <TextBlock Name="icn_ChainTrusted"
+                FontFamily="Segoe MDL2 Assets"
+                FontSize="16"
+                VerticalAlignment="Center"
+                Margin="8,0,0,0"/>
+            <TextBlock Name="txt_ChainStatus"
+                Foreground="{StaticResource TextMuted}"
+                VerticalAlignment="Center"
+                Margin="8,0,0,0"/>
+          </StackPanel>
+          <TextBlock Foreground="{StaticResource TextMuted}"
+              FontSize="12"
+              TextWrapping="Wrap"
+              Margin="0,0,0,12"
+              Text="Reflects whether the signing chain builds up to a trusted root CA on this computer."/>
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
@@ -4185,7 +4309,14 @@ function Show-ConfirmWindow {
                   Margin="8,0,0,0"/>
             </StackPanel>
           </Grid>
+          <TextBlock Foreground="{StaticResource TextMuted}"
+              FontSize="12"
+              TextWrapping="Wrap"
+              Margin="0,12,0,0"
+              Text="Show whether this exact certificate is installed in your local stores."/>
+          </StackPanel>
         </Border>
+        </StackPanel>
 
         <Grid Grid.Row="4"
             Margin="0,16,0,0">
@@ -4769,8 +4900,8 @@ $Script:ApplyCertificate = {
     Set-StatusMessage -Message "Warning: $problem" -Type 'Danger'
   }
   else {
-    Set-StatusText -Target $txtblk_CertInfo -Message "$subject  |  Valid for code signing  |  Expires $expires" -Type 'Success'
-    Set-StatusMessage -Message "Selected certificate: $subject" -Type 'Success'
+    Set-StatusText -Target $txtblk_CertInfo -Message "Valid for code signing  |  Expires $expires" -Type 'Success'
+    Set-StatusMessage -Message "Selected certificate: $($Certificate.Thumbprint)" -Type 'Success'
   }
 }
 
@@ -4862,6 +4993,9 @@ $formCodeSigning.Add_Loaded({
     $formCodeSigning.Title = "Code Signing Tool - Version $($ScriptVersion)"
     $MenuItem_Version.Header = "Version $($ScriptVersion)"
     $txtblk_TitleVersion.Text = " $($ScriptVersion)"
+    if (Test-IsAdministrator) {
+      $MenuItem_RunAsAdministrator.Visibility = [System.Windows.Visibility]::Collapsed
+    }
 
     # Defer the update check until the window has rendered and come to the foreground.
     $formCodeSigning.Dispatcher.InvokeAsync({
@@ -5184,7 +5318,14 @@ $MenuItem_CheckForUpdates.add_Click({
     Start-BackgroundUpdateCheck -Manual
   })
 
+$MenuItem_RunAsAdministrator.add_Click({
+    Restart-ScriptAsAdministrator
+  })
+
 $MenuItem_UpdateAvailable.add_Click({
+    # Detect the distribution channel lazily; it can call Get-InstalledScript (slow on first use),
+    # so it's kept off the startup path to avoid a busy cursor while the window loads.
+    if (-not $Script:UpdateChannel) { $Script:UpdateChannel = Get-UpdateChannel }
     switch ($Script:UpdateChannel) {
       'PSGallery' {
         # Let the Gallery replace the installed copy, then relaunch from its location.
