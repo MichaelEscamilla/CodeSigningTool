@@ -317,7 +317,9 @@ function Restart-ScriptAsAdministrator {
   [CmdletBinding()]
   param(
     [System.Windows.Window]$WindowToClose,
-    [string[]]$PathsToPreserve
+    [string[]]$PathsToPreserve,
+    [string]$ThumbprintToPreserve,
+    [string]$TimestampServerToPreserve
   )
 
   if (Test-IsAdministrator) { return }
@@ -330,6 +332,9 @@ function Restart-ScriptAsAdministrator {
   }
 
   $PathsToRelaunch = @($Path) + @($PathsToPreserve) | Select-Object -Unique
+  # Prefer the values currently entered in the UI; fall back to the launch-time parameters.
+  $effectiveThumbprint = if (-not [string]::IsNullOrWhiteSpace($ThumbprintToPreserve)) { $ThumbprintToPreserve } else { $Thumbprint }
+  $effectiveTimestamp = if (-not [string]::IsNullOrWhiteSpace($TimestampServerToPreserve)) { $TimestampServerToPreserve } else { $TimestampServer }
 
   # Relaunch via -Command (not -File): -File passes every token as a literal string, so a
   # multi-path array can't be reconstructed. -Command parses the tail as PowerShell, so a
@@ -339,11 +344,11 @@ function Restart-ScriptAsAdministrator {
     $quotedPaths = ($PathsToRelaunch | ForEach-Object { "'$($_.Replace("'", "''"))'" }) -join ','
     $commandParts += "-Path $quotedPaths"
   }
-  if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
-    $commandParts += "-Thumbprint '$($Thumbprint.Replace("'", "''"))'"
+  if (-not [string]::IsNullOrWhiteSpace($effectiveThumbprint)) {
+    $commandParts += "-Thumbprint '$($effectiveThumbprint.Replace("'", "''"))'"
   }
-  if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
-    $commandParts += "-TimestampServer '$($TimestampServer.Replace("'", "''"))'"
+  if (-not [string]::IsNullOrWhiteSpace($effectiveTimestamp)) {
+    $commandParts += "-TimestampServer '$($effectiveTimestamp.Replace("'", "''"))'"
   }
   $command = $commandParts -join ' '
 
@@ -1214,7 +1219,7 @@ function Show-CertificateCreator {
   $cmb_Store.add_SelectionChanged($updateStoreHint)
   $btn_RestartAsAdministrator.add_Click({
       $loadedPaths = @($Script:FilesCollection | ForEach-Object { $_.FullPath })
-      Restart-ScriptAsAdministrator -WindowToClose $creatorWindow -PathsToPreserve $loadedPaths
+      Restart-ScriptAsAdministrator -WindowToClose $creatorWindow -PathsToPreserve $loadedPaths -ThumbprintToPreserve $txt_Thumbprint.Text -TimestampServerToPreserve $txt_TimestampServer.Text
     })
   $btn_Generate.add_Click($generate)
   $btn_CancelCreate.add_Click({ $creatorWindow.DialogResult = $false })
@@ -5250,7 +5255,7 @@ $MenuItem_CheckForUpdates.add_Click({
 
 $MenuItem_RunAsAdministrator.add_Click({
     $loadedPaths = @($Script:FilesCollection | ForEach-Object { $_.FullPath })
-    Restart-ScriptAsAdministrator -PathsToPreserve $loadedPaths
+    Restart-ScriptAsAdministrator -PathsToPreserve $loadedPaths -ThumbprintToPreserve $txt_Thumbprint.Text -TimestampServerToPreserve $txt_TimestampServer.Text
   })
 
 $MenuItem_UpdateAvailable.add_Click({
