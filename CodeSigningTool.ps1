@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 2026.8.19.0
+.VERSION 2026.8.20.0
 
 .GUID 6f2c1e5a-8b3d-4c7e-9a1f-2d4e6b8c0a3f
 
@@ -25,6 +25,8 @@
 .EXTERNALSCRIPTDEPENDENCIES
 
 .RELEASENOTES
+2026.8.20.0   - Applied themed accent scrollbars to the certificate DataGrid.
+                Added a Right Click Menu to install/remove Windows Explorer context-menu entries for signing files with the selected certificate.
 2026.8.19.0   - Initial scaffold. Loads the themed window only.
                 Added listing of available code-signing certificates from the CurrentUser and LocalMachine personal stores.
                 Reworked the main window to a thumbprint field with a 'Select Certificate' button that opens a certificate picker pop-up.
@@ -64,7 +66,7 @@ param (
 # Script Name
 $Script:ScriptName = "CodeSigningTool.ps1"
 # Script Version
-[System.Version]$Script:ScriptVersion = "2026.8.19.0"
+[System.Version]$Script:ScriptVersion = "2026.8.20.0"
 # GitHub Repository (used for the update check)
 $Script:GitHubRepo = "MichaelEscamilla/CodeSigningTool"
 $Script:ReleasesApiUrl = "https://api.github.com/repos/$Script:GitHubRepo/releases/latest"
@@ -76,6 +78,19 @@ $Script:UpdateCheckHeaders = @{
 }
 # How this script was launched; drives which update action the 'Update Available' click takes.
 $Script:UpdateChannel = $null
+# Ensures the automatic startup update check runs only once, even if Window.Loaded fires again.
+$Script:StartupUpdateCheckDone = $false
+# Right-click menu registration
+$Script:RightClickMenuName = "Sign with Code Signing Tool"
+$Script:RightClickMenuFolderPath = "$env:LOCALAPPDATA\CodeSigningTool"
+# File extensions the right-click menu is registered for (limited to types Set-AuthenticodeSignature can sign).
+$Script:SignableExtensions = @(
+  '.exe', '.dll', '.sys', '.ocx', '.cpl', '.efi',
+  '.msi', '.msp', '.cab', '.cat',
+  '.ps1', '.psm1', '.psd1', '.ps1xml', '.cdxml',
+  '.vbs', '.js', '.wsf',
+  '.appx', '.appxbundle', '.msix', '.msixbundle'
+)
 # Get PowerShell Version
 $Script:ScriptPSVersion = $PSVersionTable.PSVersion
 # Get Pwsh Path
@@ -132,8 +147,11 @@ function Start-BackgroundUpdateCheck {
   [CmdletBinding()]
   param([switch]$Manual)
 
+  # The automatic startup check runs at most once per app lifetime; manual menu clicks always run.
+  if (-not $Manual -and $Script:StartupUpdateCheckDone) { return }
   # Don't start a second check while one is still running (e.g. manual click during the startup check).
   if ($Script:UpdateHandle -and -not $Script:UpdateHandle.IsCompleted) { return }
+  if (-not $Manual) { $Script:StartupUpdateCheckDone = $true }
   $Script:UpdateCheckManual = $Manual.IsPresent
 
   # Detect the distribution channel once so the update click is a cheap lookup.
@@ -197,7 +215,8 @@ function Show-UpdateAvailable {
 
 function Get-UpdateChannel {
   # Detects how the script was launched so the update action can match the channel.
-  # Cached once in $Script:UpdateChannel.
+  # Cached once in $Script:UpdateChannel; ordering matters because RightClick and LooseFile
+  # both have a non-empty $PSCommandPath.
   [CmdletBinding()]
   param()
 
@@ -208,14 +227,20 @@ function Get-UpdateChannel {
   else {
     $scriptFolder = Split-Path -Path $PSCommandPath -Parent
 
-    # PowerShell Gallery install: Install-Script location matches where we're running from.
-    $installed = Get-InstalledScript -Name 'CodeSigningTool' -ErrorAction SilentlyContinue
-    if ($installed -and $installed.InstalledLocation -eq $scriptFolder) {
-      $channel = 'PSGallery'
+    # Right-click install: running from the LOCALAPPDATA copy.
+    if ($scriptFolder -eq $Script:RightClickMenuFolderPath) {
+      $channel = 'RightClick'
     }
     else {
-      # Anything else: a loose .ps1 on disk.
-      $channel = 'LooseFile'
+      # PowerShell Gallery install: Install-Script location matches where we're running from.
+      $installed = Get-InstalledScript -Name 'CodeSigningTool' -ErrorAction SilentlyContinue
+      if ($installed -and $installed.InstalledLocation -eq $scriptFolder) {
+        $channel = 'PSGallery'
+      }
+      else {
+        # Anything else: a loose .ps1 on disk.
+        $channel = 'LooseFile'
+      }
     }
   }
 
@@ -289,6 +314,112 @@ function Restart-Script {
   Write-Host "Relaunching updated script: [$ScriptPath]"
   Start-Process -FilePath $CommandExe -ArgumentList $argList
   $formCodeSigning.Close()
+}
+
+function Install-RightClickMenu {
+  # Installs or refreshes the LOCALAPPDATA copy, icon, and per-extension right-click registry entries.
+  # Shared by the Install menu item and the RightClick update path. Returns the LOCALAPPDATA script path.
+  [CmdletBinding()]
+  param(
+    # When set, the menu command pre-selects this certificate via -Thumbprint.
+    [string]$Thumbprint
+  )
+
+  # Create the LOCALAPPDATA folder that holds the launched copy and icon.
+  Write-Host "Creating Folder:       [$($Script:RightClickMenuFolderPath)]"
+  if (-not (Test-Path $Script:RightClickMenuFolderPath)) {
+    $DestinationFolder = New-Item -ItemType Directory -Path $Script:RightClickMenuFolderPath -ErrorAction SilentlyContinue
+  }
+  else {
+    $DestinationFolder = Get-Item -Path $Script:RightClickMenuFolderPath
+  }
+
+  # Write the window icon out as an .ico for the menu entry.
+  $IconFilePath = Join-Path -Path $DestinationFolder.FullName -ChildPath 'CodeSigningTool.ico'
+  Remove-Item $IconFilePath -Force -ErrorAction SilentlyContinue | Out-Null
+  Write-Host "Creating Icon file:    [$IconFilePath]"
+  $IconByteArray = [System.Convert]::FromBase64String($Script:WindowIconBase64)
+  [System.IO.File]::WriteAllBytes($IconFilePath, $IconByteArray)
+
+  $DestinationScriptPath = Join-Path -Path $DestinationFolder.FullName -ChildPath $Script:ScriptName
+
+  # Copy the running script into place, or download it when launched from the web (no file on disk).
+  if (-not [string]::IsNullOrEmpty($PSCommandPath)) {
+    Write-Host "Creating Script:       [$DestinationScriptPath]"
+    Copy-Item -Path $PSCommandPath -Destination $DestinationScriptPath -Force -ErrorAction SilentlyContinue
+  }
+  else {
+    $ScriptURL = "https://raw.githubusercontent.com/$($Script:GitHubRepo)/main/$($Script:ScriptName)"
+    Write-Host "Downloading script:    [$ScriptURL]"
+    try {
+      Invoke-WebRequest -Uri $ScriptURL -OutFile $DestinationScriptPath -UseBasicParsing -ErrorAction Stop
+      Write-Host "Script saved:          [$DestinationScriptPath]"
+    }
+    catch {
+      Write-Host "Failed to download the script: $($_.Exception.Message)"
+    }
+  }
+
+  # Prefer pwsh 7.4+ so the menu launches directly; fall back to Windows PowerShell (always present).
+  if ($Script:PowerShellPath -and $Script:PowerShellPath.Version -ge [Version]"7.4") {
+    $CommandExe = $Script:PowerShellPath.Path
+  }
+  else {
+    $CommandExe = "C:\Windows\system32\WindowsPowerShell\v1.0\powershell.exe"
+  }
+
+  # Pick the icon: prefer the extracted .ico, then pwsh, then Windows PowerShell.
+  if (Test-Path -LiteralPath $IconFilePath) {
+    $IconValue = $IconFilePath
+  }
+  elseif ($Script:PowerShellPath) {
+    $IconValue = $Script:PowerShellPath.Path
+  }
+  else {
+    $IconValue = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+  }
+
+  $CommandLine = "`"$CommandExe`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File `"$DestinationScriptPath`" -Path `"%1`""
+  # Bake in the selected certificate so the right-click launch pre-selects it.
+  if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
+    $CommandLine += " -Thumbprint `"$Thumbprint`""
+    Write-Host "Configured Thumbprint: [$Thumbprint]"
+  }
+  else {
+    Write-Host "Configured Thumbprint: [none]"
+  }
+
+
+  # Register one entry per signable extension under SystemFileAssociations so the menu only appears
+  # on file types the tool can actually sign.
+  foreach ($extension in $Script:SignableExtensions) {
+    $MenuKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Software\Classes\SystemFileAssociations\$extension\shell\$($Script:RightClickMenuName)")
+    $MenuKey.SetValue('', $Script:RightClickMenuName)
+    $MenuKey.SetValue('icon', $IconValue)
+    $CommandKey = $MenuKey.CreateSubKey('command')
+    $CommandKey.SetValue('', $CommandLine)
+    $CommandKey.Close()
+    $MenuKey.Close()
+  }
+  Write-Host "Registry Modified:     [HKCU:\Software\Classes\SystemFileAssociations\<ext>\shell\$($Script:RightClickMenuName)] for $($Script:SignableExtensions.Count) extension(s)"
+  Write-Host "Installation Complete"
+
+  return $DestinationScriptPath
+}
+
+function Uninstall-RightClickMenu {
+  # Removes the per-extension registry entries and the LOCALAPPDATA folder.
+  [CmdletBinding()]
+  param()
+
+  foreach ($extension in $Script:SignableExtensions) {
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree("Software\Classes\SystemFileAssociations\$extension\shell\$($Script:RightClickMenuName)", $false)
+  }
+  Write-Host "Deleted Registry: [HKCU:\Software\Classes\SystemFileAssociations\<ext>\shell\$($Script:RightClickMenuName)]"
+
+  Remove-Item -Path $Script:RightClickMenuFolderPath -Force -Recurse -ErrorAction SilentlyContinue
+  Write-Host "Deleted Folder:   [$($Script:RightClickMenuFolderPath)]"
+  Write-Host "Uninstallation Complete"
 }
 
 function Get-CertCommonName {
@@ -1214,6 +1345,172 @@ function Show-CertificateInformation {
 
   return $viewerWindow.ShowDialog()
 }
+
+function Show-StatusWindow {
+  # Themed, reusable modal message window that replaces the built-in MessageBox.
+  param (
+    [Parameter(Mandatory = $true)]
+    [string]$Message,
+
+    [Parameter(Mandatory = $false)]
+    [string]$Title = 'Status',
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Info', 'Success', 'Warning', 'Error')]
+    [string]$Type = 'Info',
+
+    [Parameter(Mandatory = $false)]
+    [System.Windows.Window]$Owner
+  )
+
+  $readerStatus = New-Object System.Xml.XmlNodeReader $Script:XAMLstatus
+  [System.Windows.Window]$statusWindow = [Windows.Markup.XamlReader]::Load($readerStatus)
+
+  # Resolve the controls used by this window
+  $txt_StatusTitle = $statusWindow.FindName('txt_StatusTitle')
+  $txt_StatusMessage = $statusWindow.FindName('txt_StatusMessage')
+  $icn_Status = $statusWindow.FindName('icn_Status')
+  $btn_Close = $statusWindow.FindName('btn_Close')
+  $titlebar = $statusWindow.FindName('titlebar')
+  $titlebar_Close = $statusWindow.FindName('titlebar_Close')
+
+  $statusWindow.Title = $Title
+  $txt_StatusTitle.Text = $Title
+  $txt_StatusMessage.Text = $Message
+
+  # Map severity to a glyph and accent colour.
+  $glyph, $brushKey = switch ($Type) {
+    'Success' { [char]0xEC61, 'Success' }
+    'Warning' { [char]0xE7BA, 'Accent' }
+    'Error' { [char]0xEB90, 'Danger' }
+    default { [char]0xE946, 'Accent' }
+  }
+  $icn_Status.Text = $glyph
+  $icn_Status.Foreground = $statusWindow.FindResource($brushKey)
+
+  $statusWindow.Add_Loaded({
+      try {
+        $WindowIconBitmap = [System.Windows.Media.Imaging.BitmapImage]::new()
+        $WindowIconBitmap.BeginInit()
+        $WindowIconBitmap.StreamSource = [System.IO.MemoryStream][System.Convert]::FromBase64String($Script:WindowIconBase64)
+        $WindowIconBitmap.EndInit()
+        $WindowIconBitmap.Freeze()
+        $statusWindow.Icon = $WindowIconBitmap
+      }
+      catch {
+        Write-Host "Error setting status icon: $_"
+      }
+    })
+
+  $btn_Close.add_Click({ $statusWindow.DialogResult = $true })
+  $titlebar_Close.add_Click({ $statusWindow.DialogResult = $true })
+  $titlebar.add_MouseLeftButtonDown({ try { $statusWindow.DragMove() } catch { } })
+
+  if ($Owner) {
+    $statusWindow.Owner = $Owner
+    $statusWindow.WindowStartupLocation = "CenterOwner"
+  }
+  else {
+    $statusWindow.WindowStartupLocation = "CenterScreen"
+  }
+
+  return $statusWindow.ShowDialog()
+}
+
+function Show-ConfirmWindow {
+  # Themed, reusable confirmation window with configurable buttons.
+  # Returns the label of the clicked button, or $null if dismissed via the title-bar close.
+  param (
+    [Parameter(Mandatory = $true)]
+    [string]$Message,
+
+    [Parameter(Mandatory = $false)]
+    [string]$Title = 'Confirm',
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Info', 'Success', 'Warning', 'Error', 'Question')]
+    [string]$Type = 'Question',
+
+    # Button labels, listed left to right. The first (primary) button is styled with the accent fill.
+    [Parameter(Mandatory = $false)]
+    [string[]]$Buttons = @('OK', 'Cancel'),
+
+    [Parameter(Mandatory = $false)]
+    [System.Windows.Window]$Owner
+  )
+
+  $readerConfirm = New-Object System.Xml.XmlNodeReader $Script:XAMLconfirm
+  [System.Windows.Window]$confirmWindow = [Windows.Markup.XamlReader]::Load($readerConfirm)
+
+  # Resolve the controls used by this window
+  $txt_ConfirmTitle = $confirmWindow.FindName('txt_ConfirmTitle')
+  $txt_ConfirmMessage = $confirmWindow.FindName('txt_ConfirmMessage')
+  $icn_Confirm = $confirmWindow.FindName('icn_Confirm')
+  $pnl_Buttons = $confirmWindow.FindName('pnl_Buttons')
+  $titlebar = $confirmWindow.FindName('titlebar')
+  $titlebar_Close = $confirmWindow.FindName('titlebar_Close')
+
+  $confirmWindow.Title = $Title
+  $txt_ConfirmTitle.Text = $Title
+  $txt_ConfirmMessage.Text = $Message
+
+  # Map severity to a glyph and accent colour.
+  $glyph, $brushKey = switch ($Type) {
+    'Success' { [char]0xEC61, 'Success'; break }
+    'Warning' { [char]0xE7BA, 'Accent'; break }
+    'Error' { [char]0xEB90, 'Danger'; break }
+    'Question' { [char]0xE9CE, 'Accent'; break }
+    default { [char]0xE946, 'Accent' }
+  }
+  $icn_Confirm.Text = $glyph
+  $icn_Confirm.Foreground = $confirmWindow.FindResource($brushKey)
+
+  # Tracks the button the user clicked; stays $null when the window is closed via the title bar.
+  $Script:ConfirmResult = $null
+
+  $primaryStyle = $confirmWindow.FindResource('PrimaryButton')
+  for ($i = 0; $i -lt $Buttons.Count; $i++) {
+    $label = $Buttons[$i]
+    $button = New-Object System.Windows.Controls.Button
+    $button.Content = $label
+    $button.MinWidth = 96
+    if ($i -eq 0) { $button.Style = $primaryStyle }
+    $button.Tag = $label
+    $button.add_Click({
+        $Script:ConfirmResult = $this.Tag
+        $confirmWindow.DialogResult = $true
+      })
+    [void]$pnl_Buttons.Children.Add($button)
+  }
+
+  $confirmWindow.Add_Loaded({
+      try {
+        $WindowIconBitmap = [System.Windows.Media.Imaging.BitmapImage]::new()
+        $WindowIconBitmap.BeginInit()
+        $WindowIconBitmap.StreamSource = [System.IO.MemoryStream][System.Convert]::FromBase64String($Script:WindowIconBase64)
+        $WindowIconBitmap.EndInit()
+        $WindowIconBitmap.Freeze()
+        $confirmWindow.Icon = $WindowIconBitmap
+      }
+      catch {
+        Write-Host "Error setting confirm icon: $_"
+      }
+    })
+
+  $titlebar_Close.add_Click({ $confirmWindow.DialogResult = $false })
+  $titlebar.add_MouseLeftButtonDown({ try { $confirmWindow.DragMove() } catch { } })
+
+  if ($Owner) {
+    $confirmWindow.Owner = $Owner
+    $confirmWindow.WindowStartupLocation = "CenterOwner"
+  }
+  else {
+    $confirmWindow.WindowStartupLocation = "CenterScreen"
+  }
+
+  [void]$confirmWindow.ShowDialog()
+  return $Script:ConfirmResult
+}
 #endregion Functions
 
 #############################################
@@ -1224,7 +1521,7 @@ function Show-CertificateInformation {
   xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   Name="form1"
-  Width="920"
+  Width="1070"
   Height="620"
   ResizeMode="NoResize"
   WindowStyle="None"
@@ -1772,6 +2069,93 @@ function Show-CertificateInformation {
           Value="Center"/>
     </Style>
 
+    <!-- Themed scrollbars -->
+    <Style x:Key="ScrollThumb" TargetType="Thumb">
+      <Setter Property="OverridesDefaultStyle" Value="True"/>
+      <Setter Property="IsTabStop" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Thumb">
+            <Border x:Name="Th" Background="{StaticResource Accent}" CornerRadius="5" Margin="2"/>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Th" Property="Background" Value="{StaticResource AccentHover}"/>
+              </Trigger>
+              <Trigger Property="IsDragging" Value="True">
+                <Setter TargetName="Th" Property="Background" Value="{StaticResource AccentHover}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="ScrollPageButton" TargetType="RepeatButton">
+      <Setter Property="OverridesDefaultStyle" Value="True"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="IsTabStop" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RepeatButton">
+            <Border Background="Transparent"/>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="ScrollBar">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Width" Value="12"/>
+      <Setter Property="MinWidth" Value="12"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ScrollBar">
+            <Grid Background="Transparent">
+              <Track x:Name="PART_Track" IsDirectionReversed="True">
+                <Track.DecreaseRepeatButton>
+                  <RepeatButton Command="ScrollBar.PageUpCommand" Style="{StaticResource ScrollPageButton}"/>
+                </Track.DecreaseRepeatButton>
+                <Track.Thumb>
+                  <Thumb Style="{StaticResource ScrollThumb}"/>
+                </Track.Thumb>
+                <Track.IncreaseRepeatButton>
+                  <RepeatButton Command="ScrollBar.PageDownCommand" Style="{StaticResource ScrollPageButton}"/>
+                </Track.IncreaseRepeatButton>
+              </Track>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+      <Style.Triggers>
+        <Trigger Property="Orientation" Value="Horizontal">
+          <Setter Property="Width" Value="Auto"/>
+          <Setter Property="MinWidth" Value="0"/>
+          <Setter Property="Height" Value="12"/>
+          <Setter Property="MinHeight" Value="12"/>
+          <Setter Property="Template">
+            <Setter.Value>
+              <ControlTemplate TargetType="ScrollBar">
+                <Grid Background="Transparent">
+                  <Track x:Name="PART_Track">
+                    <Track.DecreaseRepeatButton>
+                      <RepeatButton Command="ScrollBar.PageLeftCommand" Style="{StaticResource ScrollPageButton}"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.Thumb>
+                      <Thumb Style="{StaticResource ScrollThumb}"/>
+                    </Track.Thumb>
+                    <Track.IncreaseRepeatButton>
+                      <RepeatButton Command="ScrollBar.PageRightCommand" Style="{StaticResource ScrollPageButton}"/>
+                    </Track.IncreaseRepeatButton>
+                  </Track>
+                </Grid>
+              </ControlTemplate>
+            </Setter.Value>
+          </Setter>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+
     <!-- Certificate data grid -->
     <Style TargetType="DataGrid">
       <Setter Property="Background"
@@ -1814,6 +2198,75 @@ function Show-CertificateInformation {
           Value="Auto"/>
       <Setter Property="HorizontalScrollBarVisibility"
           Value="Auto"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="DataGrid">
+            <Border Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                SnapsToDevicePixels="True">
+              <ScrollViewer x:Name="DG_ScrollViewer" Focusable="False">
+                <ScrollViewer.Template>
+                  <ControlTemplate TargetType="ScrollViewer">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+                      <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                      </Grid.RowDefinitions>
+
+                      <Button Command="{x:Static DataGrid.SelectAllCommand}"
+                          Focusable="False" Grid.Row="0" Grid.Column="0"
+                          Width="{Binding CellsPanelHorizontalOffset, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                          Visibility="{Binding HeadersVisibility, ConverterParameter={x:Static DataGridHeadersVisibility.All}, Converter={x:Static DataGrid.HeadersVisibilityConverter}, RelativeSource={RelativeSource AncestorType=DataGrid}}"/>
+
+                      <DataGridColumnHeadersPresenter x:Name="PART_ColumnHeadersPresenter"
+                          Grid.Row="0" Grid.Column="1"
+                          Visibility="{Binding HeadersVisibility, ConverterParameter={x:Static DataGridHeadersVisibility.Column}, Converter={x:Static DataGrid.HeadersVisibilityConverter}, RelativeSource={RelativeSource AncestorType=DataGrid}}"/>
+
+                      <!-- Fills the corner above the vertical scrollbar so it matches the column header row. -->
+                      <Border Grid.Row="0" Grid.Column="2"
+                          Background="{StaticResource Surface2}"
+                          BorderBrush="{StaticResource Border}"
+                          BorderThickness="0,0,0,1"/>
+
+                      <ScrollContentPresenter x:Name="PART_ScrollContentPresenter"
+                          Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                          CanContentScroll="{TemplateBinding CanContentScroll}"/>
+
+                      <ScrollBar x:Name="PART_VerticalScrollBar"
+                          Grid.Row="1" Grid.Column="2" Orientation="Vertical"
+                          Maximum="{TemplateBinding ScrollableHeight}"
+                          ViewportSize="{TemplateBinding ViewportHeight}"
+                          Value="{Binding VerticalOffset, Mode=OneWay, RelativeSource={RelativeSource TemplatedParent}}"
+                          Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
+
+                      <Grid Grid.Row="2" Grid.Column="1">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="{Binding NonFrozenColumnsViewportHorizontalOffset, RelativeSource={RelativeSource AncestorType=DataGrid}}"/>
+                          <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <ScrollBar x:Name="PART_HorizontalScrollBar"
+                            Grid.Column="1" Orientation="Horizontal"
+                            Maximum="{TemplateBinding ScrollableWidth}"
+                            ViewportSize="{TemplateBinding ViewportWidth}"
+                            Value="{Binding HorizontalOffset, Mode=OneWay, RelativeSource={RelativeSource TemplatedParent}}"
+                            Visibility="{TemplateBinding ComputedHorizontalScrollBarVisibility}"/>
+                      </Grid>
+                    </Grid>
+                  </ControlTemplate>
+                </ScrollViewer.Template>
+                <ItemsPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+              </ScrollViewer>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
 
     <Style TargetType="DataGridColumnHeader">
@@ -1920,6 +2373,14 @@ function Show-CertificateInformation {
           </StackPanel>
           <Menu DockPanel.Dock="Left"
               VerticalAlignment="Center">
+            <MenuItem Header="Right Click Menu">
+              <MenuItem Name="MenuItem_Install"
+                  Header="Install"/>
+              <MenuItem Name="MenuItem_Uninstall"
+                  Header="Uninstall"/>
+              <MenuItem Name="MenuItem_Open_RCM"
+                  Header="Open Right Click Menu Folder"/>
+            </MenuItem>
             <MenuItem Header="About">
               <MenuItem Name="MenuItem_GitHub"
                   Header="GitHub - CodeSigningTool"/>
@@ -2016,6 +2477,12 @@ function Show-CertificateInformation {
                 TextTrimming="CharacterEllipsis"
                 VerticalAlignment="Center"
                 Text="No certificate selected."/>
+            <Button Grid.Row="1"
+                Grid.Column="1"
+                Name="btn_Clear"
+                Content="Clear"
+                IsEnabled="False"
+                Margin="8,8,0,2.5"/>
             <Button Grid.Row="1"
                 Grid.Column="2"
                 Name="btn_Create"
@@ -2121,7 +2588,8 @@ function Show-CertificateInformation {
             </DataGridTextColumn>
             <DataGridTextColumn Header="Status"
                 Binding="{Binding Status}"
-                Width="110">
+                Width="Auto"
+                MinWidth="110">
               <DataGridTextColumn.ElementStyle>
                 <Style TargetType="TextBlock">
                   <Setter Property="TextTrimming"
@@ -2148,7 +2616,7 @@ function Show-CertificateInformation {
             </DataGridTextColumn>
             <DataGridTextColumn Header="Full Path"
                 Binding="{Binding FullPath}"
-                Width="*"/>
+                Width="Auto"/>
           </DataGrid.Columns>
         </DataGrid>
 
@@ -3233,7 +3701,7 @@ function Show-CertificateInformation {
 "@
 
 #############################################
-######### Certificate Information XAML #######
+######### Certificate Information XAML ######
 #############################################
 [xml]$Script:XAMLviewer = @"
 <Window
@@ -3741,6 +4209,520 @@ function Show-CertificateInformation {
 "@
 
 #############################################
+############# Status Window #################
+#############################################
+# Generic, reusable themed message window (replaces the built-in MessageBox for status details).
+[xml]$Script:XAMLstatus = @"
+<Window
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  Name="statusWindow"
+  Width="480"
+  SizeToContent="Height"
+  ResizeMode="NoResize"
+  WindowStyle="None"
+  AllowsTransparency="True"
+  Background="Transparent"
+  Title="Status"
+  FontFamily="Segoe UI"
+  FontSize="14">
+
+  <Window.Resources>
+    <SolidColorBrush x:Key="Bg"
+        Color="#292524"/>
+    <SolidColorBrush x:Key="Surface"
+        Color="#1C1917"/>
+    <SolidColorBrush x:Key="Surface2"
+        Color="#44403C"/>
+    <SolidColorBrush x:Key="Border"
+        Color="#3A3633"/>
+    <SolidColorBrush x:Key="BorderMuted"
+        Color="#57534E"/>
+    <SolidColorBrush x:Key="Text"
+        Color="#F5F5F4"/>
+    <SolidColorBrush x:Key="TextMuted"
+        Color="#A8A29E"/>
+    <SolidColorBrush x:Key="Accent"
+        Color="#FB923C"/>
+    <SolidColorBrush x:Key="AccentHover"
+        Color="#F97316"/>
+    <SolidColorBrush x:Key="AccentText"
+        Color="#1C1917"/>
+    <SolidColorBrush x:Key="Danger"
+        Color="#EF4444"/>
+    <SolidColorBrush x:Key="Success"
+        Color="#22C55E"/>
+
+    <Style x:Key="ThemedButton"
+        TargetType="Button">
+      <Setter Property="Foreground"
+          Value="{StaticResource Text}"/>
+      <Setter Property="Background"
+          Value="{StaticResource Surface2}"/>
+      <Setter Property="BorderBrush"
+          Value="{StaticResource BorderMuted}"/>
+      <Setter Property="BorderThickness"
+          Value="1"/>
+      <Setter Property="Margin"
+          Value="2.5"/>
+      <Setter Property="Padding"
+          Value="14,6"/>
+      <Setter Property="FontWeight"
+          Value="SemiBold"/>
+      <Setter Property="Cursor"
+          Value="Hand"/>
+      <Setter Property="HorizontalContentAlignment"
+          Value="Center"/>
+      <Setter Property="VerticalContentAlignment"
+          Value="Center"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                CornerRadius="6">
+              <ContentPresenter HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource Accent}"/>
+                <Setter TargetName="Bd"
+                    Property="BorderBrush"
+                    Value="{StaticResource Accent}"/>
+                <Setter Property="Foreground"
+                    Value="{StaticResource AccentText}"/>
+              </Trigger>
+              <Trigger Property="IsPressed"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource AccentHover}"/>
+                <Setter TargetName="Bd"
+                    Property="BorderBrush"
+                    Value="{StaticResource AccentHover}"/>
+                <Setter Property="Foreground"
+                    Value="{StaticResource AccentText}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="Button"
+        BasedOn="{StaticResource ThemedButton}"/>
+
+    <Style x:Key="TitleBarCloseButton"
+        TargetType="Button">
+      <Setter Property="Foreground"
+          Value="{StaticResource TextMuted}"/>
+      <Setter Property="Background"
+          Value="Transparent"/>
+      <Setter Property="BorderThickness"
+          Value="0"/>
+      <Setter Property="Width"
+          Value="46"/>
+      <Setter Property="FontFamily"
+          Value="Segoe MDL2 Assets"/>
+      <Setter Property="FontSize"
+          Value="10"/>
+      <Setter Property="Cursor"
+          Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                CornerRadius="0,11,0,0">
+              <ContentPresenter HorizontalAlignment="Center"
+                  VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource Danger}"/>
+                <Setter Property="Foreground"
+                    Value="#FFFFFF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <Border Background="{StaticResource Bg}"
+      CornerRadius="12"
+      BorderBrush="{StaticResource BorderMuted}"
+      BorderThickness="1"
+      Margin="0">
+    <DockPanel>
+      <Border Name="titlebar"
+          DockPanel.Dock="Top"
+          Background="{StaticResource Surface}"
+          CornerRadius="11,11,0,0"
+          Height="42">
+        <DockPanel LastChildFill="False">
+          <Button Name="titlebar_Close"
+              DockPanel.Dock="Right"
+              Style="{StaticResource TitleBarCloseButton}"
+              Content="&#xE8BB;"/>
+          <Image DockPanel.Dock="Left"
+              Margin="14,0,0,0"
+              Width="20"
+              Height="20"
+              VerticalAlignment="Center"
+              RenderOptions.BitmapScalingMode="HighQuality"
+              Source="{Binding Icon, RelativeSource={RelativeSource AncestorType=Window}}"/>
+          <TextBlock DockPanel.Dock="Left"
+              Name="txt_StatusTitle"
+              FontSize="15"
+              FontWeight="SemiBold"
+              Foreground="{StaticResource Text}"
+              Text="Status"
+              VerticalAlignment="Center"
+              Margin="10,0,0,0"/>
+        </DockPanel>
+      </Border>
+
+      <Grid Margin="16">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+            Background="{StaticResource Surface}"
+            BorderBrush="{StaticResource Border}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="16">
+          <DockPanel>
+            <TextBlock Name="icn_Status"
+                DockPanel.Dock="Left"
+                FontFamily="Segoe MDL2 Assets"
+                FontSize="24"
+                VerticalAlignment="Top"
+                Margin="0,0,14,0"
+                Foreground="{StaticResource Accent}"
+                Text="&#xE946;"/>
+            <TextBox Name="txt_StatusMessage"
+                Background="Transparent"
+                BorderThickness="0"
+                Foreground="{StaticResource Text}"
+                IsReadOnly="True"
+                TextWrapping="Wrap"
+                MaxHeight="360"
+                VerticalAlignment="Center"
+                VerticalScrollBarVisibility="Auto"
+                CaretBrush="{StaticResource Accent}"
+                SelectionBrush="{StaticResource Accent}"
+                Text=""/>
+          </DockPanel>
+        </Border>
+
+        <Grid Grid.Row="1"
+            Margin="0,16,0,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <Button Grid.Column="1"
+              Name="btn_Close"
+              Content="Close"
+              Width="110"/>
+        </Grid>
+      </Grid>
+    </DockPanel>
+  </Border>
+</Window>
+"@
+
+#############################################
+############ Confirmation Window ############
+#############################################
+# Generic, reusable themed confirmation window with dynamically added buttons.
+[xml]$Script:XAMLconfirm = @"
+<Window
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  Name="confirmWindow"
+  Width="480"
+  SizeToContent="Height"
+  ResizeMode="NoResize"
+  WindowStyle="None"
+  AllowsTransparency="True"
+  Background="Transparent"
+  Title="Confirm"
+  FontFamily="Segoe UI"
+  FontSize="14">
+
+  <Window.Resources>
+    <SolidColorBrush x:Key="Bg"
+        Color="#292524"/>
+    <SolidColorBrush x:Key="Surface"
+        Color="#1C1917"/>
+    <SolidColorBrush x:Key="Surface2"
+        Color="#44403C"/>
+    <SolidColorBrush x:Key="Border"
+        Color="#3A3633"/>
+    <SolidColorBrush x:Key="BorderMuted"
+        Color="#57534E"/>
+    <SolidColorBrush x:Key="Text"
+        Color="#F5F5F4"/>
+    <SolidColorBrush x:Key="TextMuted"
+        Color="#A8A29E"/>
+    <SolidColorBrush x:Key="Accent"
+        Color="#FB923C"/>
+    <SolidColorBrush x:Key="AccentHover"
+        Color="#F97316"/>
+    <SolidColorBrush x:Key="AccentText"
+        Color="#1C1917"/>
+    <SolidColorBrush x:Key="Danger"
+        Color="#EF4444"/>
+    <SolidColorBrush x:Key="Success"
+        Color="#22C55E"/>
+
+    <Style x:Key="ThemedButton"
+        TargetType="Button">
+      <Setter Property="Foreground"
+          Value="{StaticResource Text}"/>
+      <Setter Property="Background"
+          Value="{StaticResource Surface2}"/>
+      <Setter Property="BorderBrush"
+          Value="{StaticResource BorderMuted}"/>
+      <Setter Property="BorderThickness"
+          Value="1"/>
+      <Setter Property="Margin"
+          Value="2.5"/>
+      <Setter Property="Padding"
+          Value="14,6"/>
+      <Setter Property="FontWeight"
+          Value="SemiBold"/>
+      <Setter Property="Cursor"
+          Value="Hand"/>
+      <Setter Property="HorizontalContentAlignment"
+          Value="Center"/>
+      <Setter Property="VerticalContentAlignment"
+          Value="Center"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                CornerRadius="6">
+              <ContentPresenter HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource Accent}"/>
+                <Setter TargetName="Bd"
+                    Property="BorderBrush"
+                    Value="{StaticResource Accent}"/>
+                <Setter Property="Foreground"
+                    Value="{StaticResource AccentText}"/>
+              </Trigger>
+              <Trigger Property="IsPressed"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource AccentHover}"/>
+                <Setter TargetName="Bd"
+                    Property="BorderBrush"
+                    Value="{StaticResource AccentHover}"/>
+                <Setter Property="Foreground"
+                    Value="{StaticResource AccentText}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="Button"
+        BasedOn="{StaticResource ThemedButton}"/>
+
+    <!-- Primary (affirmative) button: filled accent by default -->
+    <Style x:Key="PrimaryButton"
+        TargetType="Button"
+        BasedOn="{StaticResource ThemedButton}">
+      <Setter Property="Foreground"
+          Value="{StaticResource AccentText}"/>
+      <Setter Property="Background"
+          Value="{StaticResource Accent}"/>
+      <Setter Property="BorderBrush"
+          Value="{StaticResource Accent}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                CornerRadius="6">
+              <ContentPresenter HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource AccentHover}"/>
+                <Setter TargetName="Bd"
+                    Property="BorderBrush"
+                    Value="{StaticResource AccentHover}"/>
+              </Trigger>
+              <Trigger Property="IsPressed"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource AccentHover}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="TitleBarCloseButton"
+        TargetType="Button">
+      <Setter Property="Foreground"
+          Value="{StaticResource TextMuted}"/>
+      <Setter Property="Background"
+          Value="Transparent"/>
+      <Setter Property="BorderThickness"
+          Value="0"/>
+      <Setter Property="Width"
+          Value="46"/>
+      <Setter Property="FontFamily"
+          Value="Segoe MDL2 Assets"/>
+      <Setter Property="FontSize"
+          Value="10"/>
+      <Setter Property="Cursor"
+          Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                CornerRadius="0,11,0,0">
+              <ContentPresenter HorizontalAlignment="Center"
+                  VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver"
+                  Value="True">
+                <Setter TargetName="Bd"
+                    Property="Background"
+                    Value="{StaticResource Danger}"/>
+                <Setter Property="Foreground"
+                    Value="#FFFFFF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <Border Background="{StaticResource Bg}"
+      CornerRadius="12"
+      BorderBrush="{StaticResource BorderMuted}"
+      BorderThickness="1"
+      Margin="0">
+    <DockPanel>
+      <Border Name="titlebar"
+          DockPanel.Dock="Top"
+          Background="{StaticResource Surface}"
+          CornerRadius="11,11,0,0"
+          Height="42">
+        <DockPanel LastChildFill="False">
+          <Button Name="titlebar_Close"
+              DockPanel.Dock="Right"
+              Style="{StaticResource TitleBarCloseButton}"
+              Content="&#xE8BB;"/>
+          <Image DockPanel.Dock="Left"
+              Margin="14,0,0,0"
+              Width="20"
+              Height="20"
+              VerticalAlignment="Center"
+              RenderOptions.BitmapScalingMode="HighQuality"
+              Source="{Binding Icon, RelativeSource={RelativeSource AncestorType=Window}}"/>
+          <TextBlock DockPanel.Dock="Left"
+              Name="txt_ConfirmTitle"
+              FontSize="15"
+              FontWeight="SemiBold"
+              Foreground="{StaticResource Text}"
+              Text="Confirm"
+              VerticalAlignment="Center"
+              Margin="10,0,0,0"/>
+        </DockPanel>
+      </Border>
+
+      <Grid Margin="16">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+            Background="{StaticResource Surface}"
+            BorderBrush="{StaticResource Border}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="16">
+          <DockPanel>
+            <TextBlock Name="icn_Confirm"
+                DockPanel.Dock="Left"
+                FontFamily="Segoe MDL2 Assets"
+                FontSize="24"
+                VerticalAlignment="Top"
+                Margin="0,0,14,0"
+                Foreground="{StaticResource Accent}"
+                Text="&#xE9CE;"/>
+            <TextBox Name="txt_ConfirmMessage"
+                Background="Transparent"
+                BorderThickness="0"
+                Foreground="{StaticResource Text}"
+                IsReadOnly="True"
+                TextWrapping="Wrap"
+                MaxHeight="360"
+                VerticalAlignment="Center"
+                VerticalScrollBarVisibility="Auto"
+                CaretBrush="{StaticResource Accent}"
+                SelectionBrush="{StaticResource Accent}"
+                Text=""/>
+          </DockPanel>
+        </Border>
+
+        <StackPanel Grid.Row="1"
+            Name="pnl_Buttons"
+            Orientation="Horizontal"
+            HorizontalAlignment="Right"
+            Margin="0,16,0,0"/>
+      </Grid>
+    </DockPanel>
+  </Border>
+</Window>
+"@
+
+#############################################
 ############### Window Setup #################
 #############################################
 # Create a new XML node reader for reading the XAML content
@@ -3770,11 +4752,13 @@ $Script:ApplyCertificate = {
   if ($null -eq $Certificate) {
     $txt_Thumbprint.Text = ''
     $btn_View.IsEnabled = $false
+    $btn_Clear.IsEnabled = $false
     Set-StatusText -Target $txtblk_CertInfo -Message 'No certificate selected.' -Type 'Muted'
     return
   }
 
   $btn_View.IsEnabled = $true
+  $btn_Clear.IsEnabled = $true
   $txt_Thumbprint.Text = $Certificate.Thumbprint
   $subject = Get-CertCommonName -DistinguishedName $Certificate.Subject
   $expires = $Certificate.NotAfter.ToString('yyyy-MM-dd')
@@ -3794,32 +4778,62 @@ $Script:ApplyCertificate = {
 $Script:AddFilesToList = {
   param([string[]]$Paths)
 
+  $candidates = @($Paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($candidates.Count -eq 0) { return }
+  $total = $candidates.Count
+
+  # Reading each file's signature runs on the UI thread and can be slow (many files / network paths),
+  # so surface a wait cursor and a per-file progress message that repaints instead of freezing silently.
+  $restText = $txtblk_StatusBar.Text
+  $restBrush = $txtblk_StatusBar.Foreground
+  $restWeight = $txtblk_StatusBar.FontWeight
+  $previousCursor = $formCodeSigning.Cursor
+  $formCodeSigning.Cursor = [System.Windows.Input.Cursors]::Wait
+  $accentBrush = $formCodeSigning.FindResource('Accent')
+
   $added = 0
-  foreach ($p in $Paths) {
-    if ([string]::IsNullOrWhiteSpace($p)) { continue }
-    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
-    $full = (Resolve-Path -LiteralPath $p).Path
+  try {
+    $index = 0
+    foreach ($p in $candidates) {
+      $index++
+      $txtblk_StatusBar.Text = "Loading $index of $total file(s)..."
+      $txtblk_StatusBar.Foreground = $accentBrush
+      $txtblk_StatusBar.FontWeight = [System.Windows.FontWeights]::SemiBold
+      # Flush the render queue so the message actually paints before the next (blocking) signature read.
+      $formCodeSigning.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
 
-    $exists = $false
-    foreach ($f in $Script:FilesCollection) { if ($f.FullPath -eq $full) { $exists = $true; break } }
-    if ($exists) { continue }
+      if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+      $full = (Resolve-Path -LiteralPath $p).Path
 
-    $sig = Get-FileSignatureInfo -Path $full
-    $signedValue = 'No'
-    if ($null -ne $sig -and $null -ne $sig.SignerCertificate) {
-      # Untrusted/unverified self-signed still counts as signed; only broken signatures show as Invalid.
-      $signedValue = if ("$($sig.Status)" -in 'Valid', 'UnknownError', 'NotTrusted') { 'Yes' } else { 'Invalid' }
+      $exists = $false
+      foreach ($f in $Script:FilesCollection) { if ($f.FullPath -eq $full) { $exists = $true; break } }
+      if ($exists) { continue }
+
+      $sig = Get-FileSignatureInfo -Path $full
+      $signedValue = 'No'
+      if ($null -ne $sig -and $null -ne $sig.SignerCertificate) {
+        # Untrusted/unverified self-signed still counts as signed; only broken signatures show as Invalid.
+        $signedValue = if ("$($sig.Status)" -in 'Valid', 'UnknownError', 'NotTrusted') { 'Yes' } else { 'Invalid' }
+      }
+
+      $Script:FilesCollection.Add([PSCustomObject]@{
+          FileName     = [System.IO.Path]::GetFileName($full)
+          FullPath     = $full
+          Signed       = $signedValue
+          Status       = 'Pending'
+          StatusDetail = 'Pending'
+        })
+      $added++
     }
-
-    $Script:FilesCollection.Add([PSCustomObject]@{
-        FileName     = [System.IO.Path]::GetFileName($full)
-        FullPath     = $full
-        Signed       = $signedValue
-        Status       = 'Pending'
-        StatusDetail = 'Pending'
-      })
-    $added++
   }
+  finally {
+    $formCodeSigning.Cursor = $previousCursor
+    # Restore the resting bar so the queued-count flash reverts to the correct baseline afterward.
+    $txtblk_StatusBar.Text = $restText
+    $txtblk_StatusBar.Foreground = $restBrush
+    $txtblk_StatusBar.FontWeight = $restWeight
+  }
+
   if ($added -gt 0) {
     Set-StatusMessage -Message "$($Script:FilesCollection.Count) file(s) queued." -Type 'Muted'
   }
@@ -3853,6 +4867,38 @@ $formCodeSigning.Add_Loaded({
     $formCodeSigning.Dispatcher.InvokeAsync({
         Start-BackgroundUpdateCheck
       }, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle) | Out-Null
+
+    # Pre-fill from parameters. Cheap field updates happen now; the certificate store lookup and
+    # per-file signature reads are deferred to Background priority so the window paints first.
+    if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
+      $txt_TimestampServer.Text = $TimestampServer
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
+      $txt_Thumbprint.Text = $Thumbprint
+      # A SHA-1 thumbprint is 40 hex characters once separators/spaces are stripped.
+      if ((($Thumbprint -replace '[^0-9A-Fa-f]', '').Length) -ne 40) {
+        Set-StatusText -Target $txtblk_CertInfo -Message "Invalid thumbprint  |  must be 40 hexadecimal characters" -Type 'Danger'
+      }
+    }
+
+    if ((-not [string]::IsNullOrWhiteSpace($Thumbprint)) -or $Path) {
+      $formCodeSigning.Dispatcher.InvokeAsync({
+          $cleanThumbprint = ($Thumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+          if ($cleanThumbprint.Length -eq 40) {
+            $preCert = Get-SigningCertificateByThumbprint -Thumbprint $cleanThumbprint
+            if ($null -ne $preCert) {
+              & $Script:ApplyCertificate $preCert
+            }
+            else {
+              Set-StatusText -Target $txtblk_CertInfo -Message "Certificate not found  |  not in CurrentUser or LocalMachine store" -Type 'Danger'
+            }
+          }
+          if ($Path) {
+            & $Script:AddFilesToList $Path
+          }
+        }, [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
+    }
   })
 
 #### Button Handlers ####
@@ -3874,6 +4920,16 @@ $btn_View.add_Click({
     if ($null -ne $Script:SelectedCertificate) {
       Show-CertificateInformation -Certificate $Script:SelectedCertificate -Owner $formCodeSigning | Out-Null
     }
+  })
+
+$btn_Clear.add_Click({
+    if ($null -eq $Script:SelectedCertificate) { return }
+    $certName = Get-CertCommonName -DistinguishedName $Script:SelectedCertificate.Subject
+    $answer = Show-ConfirmWindow -Message "Clear the currently loaded certificate?`n$certName" `
+      -Title 'Clear Certificate' -Type 'Question' -Buttons @('Clear', 'Cancel') -Owner $formCodeSigning
+    if ($answer -ne 'Clear') { return }
+    & $Script:ApplyCertificate $null
+    Set-StatusMessage -Message 'Certificate cleared.' -Type 'Muted'
   })
 
 $btn_AddFiles.add_Click({
@@ -3920,6 +4976,35 @@ $dg_Files.add_Drop({
     }
   })
 
+# Finds the DataGrid's inner ScrollViewer so the mouse wheel can drive horizontal scrolling.
+$Script:GetDataGridScrollViewer = {
+  param($Root)
+  $count = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($Root)
+  for ($i = 0; $i -lt $count; $i++) {
+    $child = [System.Windows.Media.VisualTreeHelper]::GetChild($Root, $i)
+    if ($child -is [System.Windows.Controls.ScrollViewer]) { return $child }
+    $found = & $Script:GetDataGridScrollViewer $child
+    if ($null -ne $found) { return $found }
+  }
+  return $null
+}
+
+# Shift+wheel scrolls horizontally; a plain wheel also scrolls horizontally when there are no rows to scroll vertically.
+$dg_Files.add_PreviewMouseWheel({
+    param($sender, $e)
+    try {
+      $sv = & $Script:GetDataGridScrollViewer $sender
+      if ($null -eq $sv) { return }
+      $shift = [System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift
+      if ($shift -or $sv.ScrollableHeight -le 0) {
+        $step = 48 * [Math]::Sign($e.Delta)
+        $sv.ScrollToHorizontalOffset($sv.HorizontalOffset - $step)
+        $e.Handled = $true
+      }
+    }
+    catch { }
+  })
+
 # Selection changes on mouse-down, so capture whether the clicked row was already the sole selection.
 $dg_Files.add_PreviewMouseLeftButtonDown({
     param($sender, $e)
@@ -3954,7 +5039,14 @@ $dg_Files.add_PreviewMouseLeftButtonUp({
 
       if ($header -eq 'Status') {
         if (-not [string]::IsNullOrWhiteSpace($item.StatusDetail)) {
-          [System.Windows.MessageBox]::Show($formCodeSigning, $item.StatusDetail, "Status - $($item.FileName)", 'OK', 'Information') | Out-Null
+          $statusValue = "$($item.Status)"
+          $statusType = switch -Wildcard ($statusValue) {
+            'Failed*' { 'Error'; break }
+            '*untrusted*' { 'Warning'; break }
+            'Signed*' { 'Success'; break }
+            default { 'Info' }
+          }
+          Show-StatusWindow -Message $item.StatusDetail -Title "Status - $($item.FileName)" -Type $statusType -Owner $formCodeSigning | Out-Null
         }
       }
       elseif ($header -eq 'Signed') {
@@ -3992,13 +5084,28 @@ $btn_Sign.add_Click({
       $existing = Get-FileSignatureInfo -Path $entry.FullPath
       if ($null -ne $existing -and $null -ne $existing.SignerCertificate) { [void]$signedPaths.Add($entry.FullPath) }
     }
+
+    $certName = Get-CertCommonName -DistinguishedName $Script:SelectedCertificate.Subject
+    $fileCount = $Script:FilesCollection.Count
+    $fileWord = "file$(if ($fileCount -ne 1) { 's' })"
+
     $skipSigned = $false
     if ($signedPaths.Count -gt 0) {
-      $answer = [System.Windows.MessageBox]::Show($formCodeSigning,
-        "$($signedPaths.Count) of the file(s) already have a signature.`n`nYes - re-sign every file`nNo - sign only the unsigned files`nCancel - do nothing",
-        'Files already signed', 'YesNoCancel', 'Question')
-      if ($answer -eq [System.Windows.MessageBoxResult]::Cancel) { return }
-      if ($answer -eq [System.Windows.MessageBoxResult]::No) { $skipSigned = $true }
+      # Some files are already signed - let the user choose how to handle them.
+      $message = "$fileCount $fileWord will be signed with:`n$certName`n`n" +
+      "$($signedPaths.Count) of them already have a signature.`n`n" +
+      "Re-sign all - replace every signature`nSign unsigned only - leave signed files untouched"
+      $answer = Show-ConfirmWindow -Message $message -Title 'Confirm Signing' -Type 'Warning' `
+        -Buttons @('Re-sign all', 'Sign unsigned only', 'Cancel') -Owner $formCodeSigning
+      if ($answer -ne 'Re-sign all' -and $answer -ne 'Sign unsigned only') { return }
+      if ($answer -eq 'Sign unsigned only') { $skipSigned = $true }
+    }
+    else {
+      # Plain confirmation before signing when nothing is already signed.
+      $message = "Sign $fileCount $fileWord with:`n$certName"
+      $answer = Show-ConfirmWindow -Message $message -Title 'Confirm Signing' -Type 'Question' `
+        -Buttons @('Sign', 'Cancel') -Owner $formCodeSigning
+      if ($answer -ne 'Sign') { return }
     }
 
     $signed = 0
@@ -4045,6 +5152,32 @@ $btn_Sign.add_Click({
     Set-StatusMessage -Message $summary -Type $(if ($failed -gt 0) { 'Danger' } else { 'Success' })
   })
 
+#### Right Click Menu Handlers ####
+$MenuItem_Install.add_Click({
+    Write-Host "Menu Item Install Clicked"
+    $thumb = if ($null -ne $Script:SelectedCertificate) { $Script:SelectedCertificate.Thumbprint } else { $null }
+    Install-RightClickMenu -Thumbprint $thumb | Out-Null
+    if ($thumb) {
+      Set-StatusMessage -Message "Right-click menu installed with the selected certificate." -Type 'Success'
+    }
+    else {
+      Set-StatusMessage -Message "Right-click menu installed." -Type 'Success'
+    }
+  })
+
+$MenuItem_Uninstall.add_Click({
+    Write-Host "Menu Item Uninstall Clicked"
+    Uninstall-RightClickMenu
+    Set-StatusMessage -Message "Right-click menu removed." -Type 'Danger'
+  })
+
+$MenuItem_Open_RCM.add_Click({
+    if (-not (Test-Path $Script:RightClickMenuFolderPath)) {
+      New-Item -ItemType Directory -Path $Script:RightClickMenuFolderPath -ErrorAction SilentlyContinue | Out-Null
+    }
+    Invoke-Item -Path $Script:RightClickMenuFolderPath
+  })
+
 #### About Menu Handlers ####
 $MenuItem_CheckForUpdates.add_Click({
     Write-Host "Checking for updates: [$($Script:ReleasesApiUrl)]"
@@ -4076,6 +5209,17 @@ $MenuItem_UpdateAvailable.add_Click({
           Open-ReleasePage
         }
       }
+      'RightClick' {
+        # Refresh the LOCALAPPDATA copy and menu entries in place, then relaunch from there.
+        if ($Script:LatestReleaseTag -and (Update-ScriptFile -ScriptPath $PSCommandPath -Tag $Script:LatestReleaseTag)) {
+          $thumb = if ($null -ne $Script:SelectedCertificate) { $Script:SelectedCertificate.Thumbprint } else { $null }
+          $updatedPath = Install-RightClickMenu -Thumbprint $thumb
+          Restart-Script -ScriptPath $updatedPath
+        }
+        else {
+          Open-ReleasePage
+        }
+      }
       default {
         # Web (and any failure): open the releases page.
         Open-ReleasePage
@@ -4098,36 +5242,6 @@ $titlebar_Close.add_Click({
 
 # Set the PowerShell Window Title
 $Host.UI.RawUI.WindowTitle = "Code Signing Tool"
-
-#############################################
-########## Pre-fill From Parameters #########
-#############################################
-if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
-  $txt_TimestampServer.Text = $TimestampServer
-}
-
-if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
-  $txt_Thumbprint.Text = $Thumbprint
-  # A SHA-1 thumbprint is 40 hex characters once separators/spaces are stripped.
-  $cleanThumbprint = ($Thumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
-
-  if ($cleanThumbprint.Length -ne 40) {
-    Set-StatusText -Target $txtblk_CertInfo -Message "Invalid thumbprint  |  must be 40 hexadecimal characters" -Type 'Danger'
-  }
-  else {
-    $preCert = Get-SigningCertificateByThumbprint -Thumbprint $cleanThumbprint
-    if ($null -ne $preCert) {
-      & $Script:ApplyCertificate $preCert
-    }
-    else {
-      Set-StatusText -Target $txtblk_CertInfo -Message "Certificate not found  |  not in CurrentUser or LocalMachine store" -Type 'Danger'
-    }
-  }
-}
-
-if ($Path) {
-  & $Script:AddFilesToList $Path
-}
 
 #Show the WPF Window
 $formCodeSigning.Add_ContentRendered({
