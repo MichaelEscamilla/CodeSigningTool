@@ -1576,7 +1576,7 @@ function Show-ConfirmWindow {
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   Name="form1"
   Width="1070"
-  Height="620"
+  Height="670"
   ResizeMode="NoResize"
   WindowStyle="None"
   AllowsTransparency="True"
@@ -2559,6 +2559,7 @@ function Show-ConfirmWindow {
             BorderThickness="1"
             CornerRadius="8"
             Padding="16">
+          <StackPanel>
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
@@ -2576,6 +2577,12 @@ function Show-ConfirmWindow {
                 Margin="10,0,0,0"
                 VerticalAlignment="Center"/>
           </Grid>
+          <TextBlock Foreground="{StaticResource TextMuted}"
+              FontSize="12"
+              TextWrapping="Wrap"
+              Margin="0,12,0,0"
+              Text="A timestamp records when the file was signed, so the signature stays valid even after the signing certificate expires."/>
+          </StackPanel>
         </Border>
 
         <!-- Files header -->
