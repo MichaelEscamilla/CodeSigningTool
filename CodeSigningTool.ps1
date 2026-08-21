@@ -1514,7 +1514,7 @@ function Show-ConfirmWindow {
   xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   Name="form1"
-  Width="920"
+  Width="1070"
   Height="620"
   ResizeMode="NoResize"
   WindowStyle="None"
