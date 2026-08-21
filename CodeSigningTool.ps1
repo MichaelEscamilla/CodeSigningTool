@@ -1257,6 +1257,7 @@ function Show-CertificateInformation {
   [System.Windows.Window]$viewerWindow = [Windows.Markup.XamlReader]::Load($readerViewer)
 
   # Resolve the controls used by this window
+  $txt_FriendlyName = $viewerWindow.FindName('txt_FriendlyName')
   $txt_Issuer = $viewerWindow.FindName('txt_Issuer')
   $txt_Subject = $viewerWindow.FindName('txt_Subject')
   $txt_Effective = $viewerWindow.FindName('txt_Effective')
@@ -1292,6 +1293,7 @@ function Show-CertificateInformation {
     }
   }
 
+  $txt_FriendlyName.Text = if ([string]::IsNullOrWhiteSpace($Certificate.FriendlyName)) { '(none)' } else { $Certificate.FriendlyName }
   $txt_Issuer.Text = $Certificate.Issuer
   $txt_Subject.Text = $Certificate.Subject
   $txt_Effective.Text = $Certificate.NotBefore.ToString('g')
@@ -4120,6 +4122,7 @@ function Show-ConfirmWindow {
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
               </Grid.RowDefinitions>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="120"/>
@@ -4128,62 +4131,71 @@ function Show-ConfirmWindow {
 
               <Label Grid.Row="0"
                   Grid.Column="0"
-                  Content="Issuer:"
+                  Content="Friendly Name:"
                   Margin="0,0,10,0"/>
               <TextBox Grid.Row="0"
                   Grid.Column="1"
-                  Name="txt_Issuer"/>
+                  Name="txt_FriendlyName"/>
 
               <Label Grid.Row="1"
                   Grid.Column="0"
-                  Content="Subject:"
+                  Content="Issuer:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="1"
                   Grid.Column="1"
-                  Name="txt_Subject"
+                  Name="txt_Issuer"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="2"
                   Grid.Column="0"
-                  Content="Effective Date:"
+                  Content="Subject:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="2"
                   Grid.Column="1"
-                  Name="txt_Effective"
+                  Name="txt_Subject"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="3"
                   Grid.Column="0"
-                  Content="Expiration Date:"
+                  Content="Effective Date:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="3"
                   Grid.Column="1"
-                  Name="txt_Expiration"
+                  Name="txt_Effective"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="4"
                   Grid.Column="0"
-                  Content="Cert Usage:"
+                  Content="Expiration Date:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="4"
                   Grid.Column="1"
-                  Name="txt_Usage"
+                  Name="txt_Expiration"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="5"
                   Grid.Column="0"
-                  Content="Public Key:"
+                  Content="Cert Usage:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="5"
                   Grid.Column="1"
-                  Name="txt_PublicKey"
+                  Name="txt_Usage"
                   Margin="0,10,0,0"/>
 
               <Label Grid.Row="6"
                   Grid.Column="0"
-                  Content="Thumbprint:"
+                  Content="Public Key:"
                   Margin="0,10,10,0"/>
               <TextBox Grid.Row="6"
+                  Grid.Column="1"
+                  Name="txt_PublicKey"
+                  Margin="0,10,0,0"/>
+
+              <Label Grid.Row="7"
+                  Grid.Column="0"
+                  Content="Thumbprint:"
+                  Margin="0,10,10,0"/>
+              <TextBox Grid.Row="7"
                   Grid.Column="1"
                   Name="txt_Thumbprint"
                   Margin="0,10,0,0"/>
