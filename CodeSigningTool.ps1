@@ -2315,6 +2315,12 @@ function Show-ConfirmWindow {
                 VerticalAlignment="Center"
                 Text="No certificate selected."/>
             <Button Grid.Row="1"
+                Grid.Column="1"
+                Name="btn_Clear"
+                Content="Clear"
+                IsEnabled="False"
+                Margin="8,8,0,2.5"/>
+            <Button Grid.Row="1"
                 Grid.Column="2"
                 Name="btn_Create"
                 Content="Create..."
@@ -2419,7 +2425,8 @@ function Show-ConfirmWindow {
             </DataGridTextColumn>
             <DataGridTextColumn Header="Status"
                 Binding="{Binding Status}"
-                Width="110">
+                Width="Auto"
+                MinWidth="110">
               <DataGridTextColumn.ElementStyle>
                 <Style TargetType="TextBlock">
                   <Setter Property="TextTrimming"
@@ -4582,11 +4589,13 @@ $Script:ApplyCertificate = {
   if ($null -eq $Certificate) {
     $txt_Thumbprint.Text = ''
     $btn_View.IsEnabled = $false
+    $btn_Clear.IsEnabled = $false
     Set-StatusText -Target $txtblk_CertInfo -Message 'No certificate selected.' -Type 'Muted'
     return
   }
 
   $btn_View.IsEnabled = $true
+  $btn_Clear.IsEnabled = $true
   $txt_Thumbprint.Text = $Certificate.Thumbprint
   $subject = Get-CertCommonName -DistinguishedName $Certificate.Subject
   $expires = $Certificate.NotAfter.ToString('yyyy-MM-dd')
@@ -4748,6 +4757,16 @@ $btn_View.add_Click({
     if ($null -ne $Script:SelectedCertificate) {
       Show-CertificateInformation -Certificate $Script:SelectedCertificate -Owner $formCodeSigning | Out-Null
     }
+  })
+
+$btn_Clear.add_Click({
+    if ($null -eq $Script:SelectedCertificate) { return }
+    $certName = Get-CertCommonName -DistinguishedName $Script:SelectedCertificate.Subject
+    $answer = Show-ConfirmWindow -Message "Clear the currently loaded certificate?`n$certName" `
+      -Title 'Clear Certificate' -Type 'Question' -Buttons @('Clear', 'Cancel') -Owner $formCodeSigning
+    if ($answer -ne 'Clear') { return }
+    & $Script:ApplyCertificate $null
+    Set-StatusMessage -Message 'Certificate cleared.' -Type 'Muted'
   })
 
 $btn_AddFiles.add_Click({
