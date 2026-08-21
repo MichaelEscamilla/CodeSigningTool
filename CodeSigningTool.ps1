@@ -316,7 +316,8 @@ function Restart-Script {
 function Restart-ScriptAsAdministrator {
   [CmdletBinding()]
   param(
-    [System.Windows.Window]$WindowToClose
+    [System.Windows.Window]$WindowToClose,
+    [string[]]$PathsToPreserve
   )
 
   if (Test-IsAdministrator) { return }
@@ -328,19 +329,30 @@ function Restart-ScriptAsAdministrator {
     $CommandExe = "C:\Windows\system32\WindowsPowerShell\v1.0\powershell.exe"
   }
 
-  $ArgumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Minimized', '-File', "`"$PSCommandPath`"")
-  foreach ($FilePath in $Path) {
-    $ArgumentList += @('-Path', "`"$FilePath`"")
+  $PathsToRelaunch = @($Path) + @($PathsToPreserve) | Select-Object -Unique
+
+  # Relaunch via -Command (not -File): -File passes every token as a literal string, so a
+  # multi-path array can't be reconstructed. -Command parses the tail as PowerShell, so a
+  # comma-separated, single-quoted list binds correctly to the [string[]]$Path parameter.
+  $commandParts = @("& '$($PSCommandPath.Replace("'", "''"))'")
+  if ($PathsToRelaunch.Count -gt 0) {
+    $quotedPaths = ($PathsToRelaunch | ForEach-Object { "'$($_.Replace("'", "''"))'" }) -join ','
+    $commandParts += "-Path $quotedPaths"
   }
   if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
-    $ArgumentList += @('-Thumbprint', "`"$Thumbprint`"")
+    $commandParts += "-Thumbprint '$($Thumbprint.Replace("'", "''"))'"
   }
   if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
-    $ArgumentList += @('-TimestampServer', "`"$TimestampServer`"")
+    $commandParts += "-TimestampServer '$($TimestampServer.Replace("'", "''"))'"
   }
+  $command = $commandParts -join ' '
+
+  $argList = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -Command `"$command`""
+
+  Write-Host "Relaunch command: $CommandExe $argList" -ForegroundColor Cyan
 
   try {
-    Start-Process -FilePath $CommandExe -ArgumentList $ArgumentList -Verb RunAs -ErrorAction Stop | Out-Null
+    Start-Process -FilePath $CommandExe -ArgumentList $argList -Verb RunAs -ErrorAction Stop | Out-Null
     if ($WindowToClose) { $WindowToClose.Close() }
     $formCodeSigning.Close()
   }
@@ -1200,7 +1212,10 @@ function Show-CertificateCreator {
   $btn_YearsUp.add_Click({ & $adjustYears 1 })
   $btn_YearsDown.add_Click({ & $adjustYears -1 })
   $cmb_Store.add_SelectionChanged($updateStoreHint)
-  $btn_RestartAsAdministrator.add_Click({ Restart-ScriptAsAdministrator -WindowToClose $creatorWindow })
+  $btn_RestartAsAdministrator.add_Click({
+      $loadedPaths = @($Script:FilesCollection | ForEach-Object { $_.FullPath })
+      Restart-ScriptAsAdministrator -WindowToClose $creatorWindow -PathsToPreserve $loadedPaths
+    })
   $btn_Generate.add_Click($generate)
   $btn_CancelCreate.add_Click({ $creatorWindow.DialogResult = $false })
   $titlebar_Close.add_Click({ $creatorWindow.DialogResult = $false })
@@ -5234,7 +5249,8 @@ $MenuItem_CheckForUpdates.add_Click({
   })
 
 $MenuItem_RunAsAdministrator.add_Click({
-    Restart-ScriptAsAdministrator
+    $loadedPaths = @($Script:FilesCollection | ForEach-Object { $_.FullPath })
+    Restart-ScriptAsAdministrator -PathsToPreserve $loadedPaths
   })
 
 $MenuItem_UpdateAvailable.add_Click({
