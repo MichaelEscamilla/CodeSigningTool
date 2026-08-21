@@ -4203,13 +4203,17 @@ function Show-ConfirmWindow {
         </Border>
 
         <!-- Trust status -->
-        <Border Grid.Row="3"
-            Background="{StaticResource Surface}"
-            BorderBrush="{StaticResource Border}"
-            BorderThickness="1"
-            CornerRadius="8"
-            Padding="16"
+        <StackPanel Grid.Row="3"
             Margin="0,12,0,0">
+          <TextBlock Style="{StaticResource SectionHeader}"
+              Text="Trust Status"
+              Margin="0,0,0,8"/>
+          <Border Background="{StaticResource Surface}"
+              BorderBrush="{StaticResource Border}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="16">
+          <StackPanel>
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
@@ -4258,7 +4262,13 @@ function Show-ConfirmWindow {
                   Margin="8,0,0,0"/>
             </StackPanel>
           </Grid>
+          <TextBlock Foreground="{StaticResource TextMuted}"
+              FontSize="12"
+              Margin="0,12,0,0"
+              Text="Trust status reflects this computer's certificate stores."/>
+          </StackPanel>
         </Border>
+        </StackPanel>
 
         <Grid Grid.Row="4"
             Margin="0,16,0,0">
