@@ -1265,6 +1265,8 @@ function Show-CertificateInformation {
   $icn_TrustedPublisher = $viewerWindow.FindName('icn_TrustedPublisher')
   $icn_TrustedRoot = $viewerWindow.FindName('icn_TrustedRoot')
   $icn_SelfSigned = $viewerWindow.FindName('icn_SelfSigned')
+  $icn_ChainTrusted = $viewerWindow.FindName('icn_ChainTrusted')
+  $txt_ChainStatus = $viewerWindow.FindName('txt_ChainStatus')
   $btn_Validate = $viewerWindow.FindName('btn_Validate')
   $btn_Close = $viewerWindow.FindName('btn_Close')
   $titlebar = $viewerWindow.FindName('titlebar')
@@ -1302,6 +1304,18 @@ function Show-CertificateInformation {
   & $setStatusIcon $icn_TrustedPublisher ([bool](Test-CertificateInStore -Certificate $Certificate -StoreName 'TrustedPublisher'))
   & $setStatusIcon $icn_TrustedRoot ([bool](Test-CertificateInStore -Certificate $Certificate -StoreName 'Root'))
   & $setStatusIcon $icn_SelfSigned ([bool]($Certificate.Subject -eq $Certificate.Issuer))
+
+  # Build the chain up-front so the header reflects real trust (chains to a trusted root), not just leaf-in-store.
+  $chainForStatus = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+  try {
+    $chainTrusted = [bool]$chainForStatus.Build($Certificate)
+    & $setStatusIcon $icn_ChainTrusted $chainTrusted
+    $txt_ChainStatus.Text = if ($chainTrusted) { 'Trusted' } else { 'Not trusted' }
+    $txt_ChainStatus.Foreground = if ($chainTrusted) { $viewerWindow.FindResource('Success') } else { $viewerWindow.FindResource('Danger') }
+  }
+  finally {
+    $chainForStatus.Reset()
+  }
 
   # When a file signature is supplied, reveal and populate the Signature section.
   if ($null -ne $Signature) {
@@ -4221,6 +4235,27 @@ function Show-ConfirmWindow {
               CornerRadius="8"
               Padding="16">
           <StackPanel>
+          <StackPanel Orientation="Horizontal"
+              Margin="0,0,0,12">
+            <TextBlock Text="Certificate Chain:"
+                Foreground="{StaticResource Text}"
+                FontWeight="SemiBold"
+                VerticalAlignment="Center"/>
+            <TextBlock Name="icn_ChainTrusted"
+                FontFamily="Segoe MDL2 Assets"
+                FontSize="16"
+                VerticalAlignment="Center"
+                Margin="8,0,0,0"/>
+            <TextBlock Name="txt_ChainStatus"
+                Foreground="{StaticResource TextMuted}"
+                VerticalAlignment="Center"
+                Margin="8,0,0,0"/>
+          </StackPanel>
+          <TextBlock Foreground="{StaticResource TextMuted}"
+              FontSize="12"
+              TextWrapping="Wrap"
+              Margin="0,0,0,12"
+              Text="Reflects whether the signing chain builds up to a trusted root CA on this computer."/>
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
@@ -4271,8 +4306,9 @@ function Show-ConfirmWindow {
           </Grid>
           <TextBlock Foreground="{StaticResource TextMuted}"
               FontSize="12"
+              TextWrapping="Wrap"
               Margin="0,12,0,0"
-              Text="Trust status reflects this computer's certificate stores."/>
+              Text="Show whether this exact certificate is installed in your local stores."/>
           </StackPanel>
         </Border>
         </StackPanel>
