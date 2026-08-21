@@ -2609,7 +2609,8 @@ function Show-ConfirmWindow {
 
         <DataGrid Grid.Row="5"
             Name="dg_Files"
-            AllowDrop="True">
+            AllowDrop="True"
+            VirtualizingPanel.ScrollUnit="Pixel">
           <DataGrid.Columns>
             <DataGridTextColumn Header="File"
                 Binding="{Binding FileName}"
